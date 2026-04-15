@@ -1,5 +1,5 @@
 # AI Coach Mobile
 
-Bu repo icindeki PRD dokumanini GitHub uzerinden dogrudan okuyabilirsiniz:
+Bu repo icindeki PRD ve MVP dokumanini GitHub uzerinden dogrudan okuyabilirsiniz:
 
 - `upschool301prddocument.md`
