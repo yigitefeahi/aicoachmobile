@@ -2,4 +2,4 @@
 
 Bu repo icindeki PRD ve MVP dokumanini GitHub uzerinden dogrudan okuyabilirsiniz:
 
-- `upschool301prddocument.md`
+- `upschool301prdmvpdocument.md`
