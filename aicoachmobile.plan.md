@@ -1,6 +1,6 @@
 ---
 name: AI Coach Mobile plan
-overview: CV bazli kisisellestirilmis AI mulakat simulasyonu sunan mobil uygulama icin asamali urun ve teknik gelistirme plani. Kapsam: CV analizi, dinamik soru motoru, sesli/video mulakat, skor ve geri bildirim dongusu.
+overview: "CV bazli kisisellestirilmis AI mulakat simulasyonu sunan mobil uygulama icin asamali urun ve teknik gelistirme plani. Kapsam: CV analizi, dinamik soru motoru, sesli/video mulakat, skor ve geri bildirim dongusu."
 todos:
   - id: confirm-scope
     content: MVP kapsamini netlestir (Interview Coach core + mini learning modulu opsiyonel)
