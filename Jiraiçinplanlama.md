@@ -2,7 +2,7 @@
 
 Bu doküman, `upschool301prdmvpdocument.md` PRD’sindeki MVP kapsamını **Epic → Story → Task** hiyerarşisiyle parçalar. Jira’da Epic ve Story tipleri, alt işler ise Task/Sub-task olarak açılabilir.
 
-**Repo / ürün:** aicoachmobile (mobil odaklı teslimat; PRD’deki web/responsive yaklaşımı mobil ekranlara uyarlanır.)
+**Repo / ürün:** aicoachapp (mobil odaklı teslimat; PRD’deki web/responsive yaklaşımı mobil ekranlara uyarlanır.)
 
 **Referans:** PRD bölüm 6 (MVP), 7 (User Flow), 8 (Tech Approach).
 

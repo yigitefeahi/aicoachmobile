@@ -1,12 +1,12 @@
-# AI Coach Mobile
+# AI Coach App
 
-AI Coach Mobile, CV ve hedef role gore yapay zeka destekli mulakat simulasyonu sunan bir urun icin temel full-stack iskeletidir.
+AI Coach App, CV ve hedef role gore yapay zeka destekli mulakat simulasyonu sunan bir urun icin temel full-stack iskeletidir.
 
 ## Project Structure
 
 - `frontend/`: React + TypeScript + Vite tabanli istemci
 - `backend/`: FastAPI tabanli API
-- `aicoachmobile.plan.md`: Yol haritasi ve teknik plan
+- `aicoachapp.plan.md`: Yol haritasi ve teknik plan
 - `Jiraiçinplanlama.md`: Epic/Story/Task kirilimi
 - `upschool301prdmvpdocument.md`: PRD dokumani
 

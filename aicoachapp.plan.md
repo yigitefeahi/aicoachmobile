@@ -1,5 +1,5 @@
 ---
-name: AI Coach Mobile plan
+name: AI Coach App plan
 overview: "CV bazli kisisellestirilmis AI mulakat simulasyonu sunan mobil uygulama icin asamali urun ve teknik gelistirme plani. Kapsam: CV analizi, dinamik soru motoru, sesli/video mulakat, skor ve geri bildirim dongusu."
 todos:
   - id: confirm-scope
@@ -32,7 +32,7 @@ todos:
 isProject: true
 ---
 
-# AI Coach Mobile development plan
+# AI Coach App development plan
 
 ## Urun hedefi
 Kullanicinin CV'si ve hedef rolune gore gercekci bir mulakat simulasyonu uretmek; ses/video sinyallerini de kullanarak icerik, iletisim ve ozguven odakli geri bildirim vermek.

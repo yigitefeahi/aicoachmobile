@@ -30,7 +30,7 @@ export default function App() {
 
   return (
     <main className="container">
-      <h1>AI Coach Mobile</h1>
+      <h1>AI Coach App</h1>
       <p>Frontend + Backend baseline is ready.</p>
 
       <section className="card">
