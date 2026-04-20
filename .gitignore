@@ -8,6 +8,7 @@ frontend/dist/
 backend/.venv/
 backend/__pycache__/
 backend/.pytest_cache/
+**/__pycache__/
 
 # Env files
 .env
