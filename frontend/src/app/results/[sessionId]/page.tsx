@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import { ScoreBadge } from "@/components/score-badge";
+import { RagInspectorPanel, type RagInspectorData } from "@/components/rag-inspector-panel";
 import {
   Radar,
   RadarChart,
@@ -33,6 +34,12 @@ type SessionResponse = {
       strengths?: string[];
       weaknesses?: string[];
       suggestions?: string[];
+      suggestion_citations?: Array<{
+        suggestion?: string;
+        citation_ids?: string[];
+        reason?: string;
+        support_level?: string;
+      }>;
       recommended_next_steps?: string[];
       retrieval_evidence?: Array<{
         source?: string;
@@ -42,7 +49,13 @@ type SessionResponse = {
         relevance_label?: string;
         preview?: string;
         keyword_hits?: number;
+        doc_type?: string;
       }>;
+      rag_summary?: string;
+      retrieval_quality?: { label?: string; score?: number; evidence_count?: number; source_count?: number };
+      citations?: Array<{ id?: string; source?: string; layer?: string; doc_type?: string; claim?: string; score?: number }>;
+      citation_notes?: string[];
+      rag_evaluation?: Record<string, unknown>;
       feedback?: string;
       score_explanation?: string;
       confidence_score?: number;
@@ -99,6 +112,36 @@ type RagCompareResult = {
   };
 };
 
+type RagEvalSession = {
+  retrieval_precision?: number;
+  coverage?: number;
+  faithfulness?: number;
+  answer_grounding?: number;
+  citation_support_rate?: number;
+  retrieval_quality?: { label?: string; score?: number };
+  low_confidence?: boolean;
+  rag_vs_no_rag?: {
+    status?: string;
+    detail?: string;
+    score_delta?: number | null;
+    confidence_delta?: number | null;
+    preferred_mode?: "rag" | "no_rag";
+  };
+  evidence_count?: number;
+};
+
+type RagEvalTrend = {
+  status?: string;
+  sample_size?: number;
+  averages?: {
+    retrieval_precision?: number;
+    coverage?: number;
+    faithfulness?: number;
+    citation_support_rate?: number;
+  };
+  low_confidence_rate?: number | null;
+};
+
 export default function ResultsPage() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
@@ -109,7 +152,13 @@ export default function ResultsPage() {
   const [report, setReport] = useState<SessionReport | null>(null);
   const [reliability, setReliability] = useState<ReliabilityResult | null>(null);
   const [ragCompare, setRagCompare] = useState<RagCompareResult | null>(null);
+  const [ragInspector, setRagInspector] = useState<RagInspectorData | null>(null);
+  const [highlightedCitationId, setHighlightedCitationId] = useState<string | null>(null);
+  const [ragEval, setRagEval] = useState<RagEvalSession | null>(null);
+  const [ragTrend, setRagTrend] = useState<RagEvalTrend | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [inspectorLoading, setInspectorLoading] = useState(false);
+  const [ragEvalLoading, setRagEvalLoading] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
   useEffect(() => {
@@ -186,6 +235,51 @@ export default function ResultsPage() {
     } finally {
       setAnalysisLoading(false);
     }
+  };
+
+  const loadRagEvaluation = async (includeCompare = false) => {
+    try {
+      setRagEvalLoading(true);
+      const [sessionRes, trendRes] = await Promise.all([
+        apiFetch(`/rag/eval/session/${sessionId}?include_compare=${includeCompare ? "true" : "false"}`),
+        apiFetch("/rag/eval/trend?sample_size=20"),
+      ]);
+      setRagEval(await sessionRes.json());
+      setRagTrend(await trendRes.json());
+    } catch (e) {
+      console.error("rag evaluation failed", e);
+    } finally {
+      setRagEvalLoading(false);
+    }
+  };
+
+  const loadRagInspector = async (turnIndex?: number, phase?: string) => {
+    try {
+      setInspectorLoading(true);
+      const params = new URLSearchParams();
+      if (turnIndex) params.set("turn_index", String(turnIndex));
+      if (phase) params.set("phase", phase);
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      const res = await apiFetch(`/rag/inspector/session/${sessionId}${suffix}`);
+      setRagInspector(await res.json());
+    } catch (e) {
+      console.error("rag inspector failed", e);
+    } finally {
+      setInspectorLoading(false);
+    }
+  };
+
+  const focusCitation = (citationId: string) => {
+    setHighlightedCitationId(citationId);
+    if (!ragInspector) {
+      void loadRagInspector().then(() => {
+        window.setTimeout(() => {
+          document.getElementById(`rag-evidence-${citationId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 400);
+      });
+      return;
+    }
+    document.getElementById(`rag-evidence-${citationId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
   const downloadReport = async () => {
@@ -453,9 +547,36 @@ export default function ResultsPage() {
               <div className="card-soft p-5">
                 <div className="mb-2 font-medium">Suggestions</div>
                 <ul className="space-y-2 text-sm text-slate-300">
-                  {(finalSummary?.suggestions || []).map((item, i) => (
-                    <li key={i}>• {item}</li>
-                  ))}
+                  {(finalSummary?.suggestions || []).map((item, i) => {
+                    const support = (finalSummary?.suggestion_citations || []).find(
+                      (entry) => String(entry.suggestion || "").trim().toLowerCase() === String(item || "").trim().toLowerCase()
+                    );
+                    return (
+                      <li key={i} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                        <div>• {item}</div>
+                        {!!support?.citation_ids?.length && (
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                            {support.citation_ids.map((cid) => (
+                              <button
+                                key={`${item}-${cid}`}
+                                type="button"
+                                onClick={() => focusCitation(cid)}
+                                className="rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-1 text-cyan-100"
+                              >
+                                {cid}
+                              </button>
+                            ))}
+                            {support.support_level && (
+                              <span className="rounded-full border border-white/20 px-2 py-1 text-slate-300">
+                                support: {support.support_level}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {!!support?.reason && <div className="mt-1 text-xs text-slate-400">{support.reason}</div>}
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             </div>
@@ -469,11 +590,22 @@ export default function ResultsPage() {
             </div>
             <div className="card-soft mt-4 p-4">
               <div className="mb-2 font-medium">RAG Evidence (Top Sources)</div>
+              <div className="mb-3 rounded-xl border border-cyan-400/20 bg-cyan-500/10 p-3 text-sm text-cyan-100">
+                <div className="font-semibold">
+                  Quality: {finalSummary?.retrieval_quality?.label || "none"}
+                  {typeof finalSummary?.retrieval_quality?.score === "number"
+                    ? ` (${finalSummary.retrieval_quality.score}/100)`
+                    : ""}
+                </div>
+                <p className="mt-1 text-cyan-100/80">
+                  {finalSummary?.rag_summary || "No RAG summary was stored for this session."}
+                </p>
+              </div>
               <ul className="space-y-3 text-sm text-slate-300">
                 {(finalSummary?.retrieval_evidence || []).slice(0, 4).map((item, i) => (
                   <li key={i} className="rounded-xl border border-white/10 bg-white/5 p-3">
                     <div className="font-medium">
-                      {item.source || "unknown"} • relevance: {item.relevance_label || "n/a"}
+                      {item.source || "unknown"} • {item.doc_type || "knowledge"} • relevance: {item.relevance_label || "n/a"}
                     </div>
                     <div className="mt-1 text-xs text-slate-400">
                       hybrid {item.hybrid_score ?? 0} | semantic {item.semantic_score ?? 0} | keyword{" "}
@@ -483,6 +615,24 @@ export default function ResultsPage() {
                   </li>
                 ))}
               </ul>
+              {!!finalSummary?.citations?.length && (
+                <div className="mt-4 rounded-xl border border-cyan-400/20 bg-cyan-500/10 p-3 text-sm text-cyan-100">
+                  <div className="font-semibold">Citation-grounded feedback</div>
+                  <ul className="mt-2 space-y-1 text-cyan-100/80">
+                    {finalSummary.citations.slice(0, 4).map((citation) => (
+                      <li key={citation.id || citation.source}>
+                        <button
+                          type="button"
+                          className="text-left underline decoration-cyan-300/50 underline-offset-2 hover:text-cyan-50"
+                          onClick={() => citation.id && focusCitation(citation.id)}
+                        >
+                          {citation.id}: {citation.doc_type} · {citation.source} · {citation.claim}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
             <div className="card-soft mt-4 p-4">
               <div className="mb-2 font-medium">Quality Flags</div>
@@ -553,6 +703,82 @@ export default function ResultsPage() {
               )}
             </div>
           </div>
+        </div>
+
+        <div className="glass panel mt-8">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="text-xl font-semibold">RAG Scorecard (Quality Evaluation)</h2>
+            <button
+              type="button"
+              onClick={() => loadRagEvaluation(true)}
+              className="btn-secondary"
+              disabled={ragEvalLoading}
+            >
+              {ragEvalLoading ? "Loading..." : "Load RAG Evaluation"}
+            </button>
+          </div>
+          {!ragEval ? (
+            <p className="text-sm text-slate-300">
+              Evaluate retrieval precision, coverage, faithfulness, citation support, and low-confidence risk.
+            </p>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="card-soft p-4">
+                <div className="font-medium">Session Quality</div>
+                <ul className="mt-2 space-y-2 text-sm text-slate-300">
+                  <li>• Retrieval precision: {Math.round((ragEval.retrieval_precision || 0) * 100)}%</li>
+                  <li>• Coverage: {Math.round((ragEval.coverage || 0) * 100)}%</li>
+                  <li>• Faithfulness: {Math.round((ragEval.faithfulness || 0) * 100)}%</li>
+                  <li>• Citation support: {Math.round((ragEval.citation_support_rate || 0) * 100)}%</li>
+                  <li>• Low confidence: {ragEval.low_confidence ? "yes" : "no"}</li>
+                  <li>• Evidence chunks: {ragEval.evidence_count ?? 0}</li>
+                </ul>
+              </div>
+              <div className="card-soft p-4">
+                <div className="font-medium">RAG vs No-RAG and Trend</div>
+                <ul className="mt-2 space-y-2 text-sm text-slate-300">
+                  <li>• Compare status: {ragEval.rag_vs_no_rag?.status || "not_run"}</li>
+                  <li>• Preferred mode: {ragEval.rag_vs_no_rag?.preferred_mode || "-"}</li>
+                  <li>• Score delta: {ragEval.rag_vs_no_rag?.score_delta ?? "-"}</li>
+                  <li>• Confidence delta: {ragEval.rag_vs_no_rag?.confidence_delta ?? "-"}</li>
+                  <li>• Trend sample size: {ragTrend?.sample_size ?? 0}</li>
+                  <li>
+                    • Trend low confidence rate:{" "}
+                    {typeof ragTrend?.low_confidence_rate === "number"
+                      ? `${Math.round(ragTrend.low_confidence_rate * 100)}%`
+                      : "-"}
+                  </li>
+                </ul>
+                {ragEval.rag_vs_no_rag?.detail && (
+                  <p className="mt-3 text-xs text-slate-400">{ragEval.rag_vs_no_rag.detail}</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="glass panel mt-8">
+          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="step-label">RAG Inspector</p>
+              <h2 className="mt-2 text-xl font-semibold">Retrieval Debug and Evidence Trace</h2>
+              <p className="mt-2 text-sm text-slate-300">
+                Shows query context, layer coverage, graph hits, user memory, and retrieval quality for defense/demo.
+              </p>
+            </div>
+            <button type="button" onClick={() => void loadRagInspector()} className="btn-secondary" disabled={inspectorLoading}>
+              {inspectorLoading ? "Loading..." : "Open Inspector"}
+            </button>
+          </div>
+          <RagInspectorPanel
+            sessionId={sessionId}
+            inspector={ragInspector}
+            loading={inspectorLoading}
+            onLoad={loadRagInspector}
+            onUpdate={setRagInspector}
+            highlightedCitationId={highlightedCitationId}
+            onCitationHighlight={setHighlightedCitationId}
+          />
         </div>
 
         <div className="glass panel mt-8">

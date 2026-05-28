@@ -1,5 +1,6 @@
 from typing import Any, Optional
 import json
+import re
 
 from sqlalchemy.orm import Session
 
@@ -9,13 +10,13 @@ from .config import settings
 from .interview_config import (
     normalize_config,
     target_question_count,
-    generate_first_question,
     extract_topic_hint,
     generate_dynamic_question,
     dedupe_question,
     build_question_context,
     generate_bank_question,
 )
+from .question_planner import build_question_plan, format_question_rationale
 from .interview_evaluation import (
     RUBRIC_KEYS,
     evaluate_answer,
@@ -47,6 +48,7 @@ def _question_retrieval(profession: str, config: dict[str, Any], asked_topics: l
             "summary": result.summary,
             "quality": result.quality,
             "evidence": result.evidence,
+            "query_trace": result.query_trace,
         }
     except Exception:
         return {
@@ -54,7 +56,188 @@ def _question_retrieval(profession: str, config: dict[str, Any], asked_topics: l
             "summary": "RAG question evidence unavailable; question bank fallback used.",
             "quality": {"label": "none", "score": 0, "evidence_count": 0},
             "evidence": [],
+            "query_trace": {},
         }
+
+
+def _generate_planned_question(
+    db: Session,
+    user: User,
+    profession: str,
+    config: dict[str, Any],
+    asked_topics: list[str],
+    avoid_questions: list[str],
+    previous_turns: list[dict[str, str]],
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    question_config = enrich_config_with_memory(db, user, config)
+    question_rag = _question_retrieval(profession, question_config, asked_topics, avoid_questions)
+    plan = build_question_plan(
+        profession=profession,
+        config=question_config,
+        asked_topics=asked_topics,
+        asked_questions=avoid_questions,
+        previous_turns=previous_turns,
+        retrieval_evidence=question_rag.get("evidence", []),
+        rag_summary=question_rag.get("summary", ""),
+    )
+    fallback = generate_bank_question(profession, config, avoid_questions=avoid_questions)
+    candidate = (
+        generate_dynamic_question(
+            profession,
+            question_config,
+            asked_topics,
+            avoid_questions,
+            retrieval_context=question_rag["context"],
+            rag_summary=question_rag["summary"],
+            question_plan=plan,
+        )
+        or fallback
+    )
+    question = dedupe_question(candidate, avoid_questions, fallback)
+    plan["question_rationale"] = format_question_rationale(plan)
+    return question, question_rag, plan
+
+
+def _topic_tags_from_question(question: str) -> list[str]:
+    text = (question or "").lower()
+    tags: list[str] = []
+    if any(token in text for token in ["system design", "scalable", "architecture", "distributed"]):
+        tags.append("system_design")
+    if any(token in text for token in ["behavioral", "conflict", "stakeholder", "team", "story"]):
+        tags.append("behavioral")
+    if any(token in text for token in ["api", "backend", "database", "service", "reliability"]):
+        tags.append("backend")
+    if any(token in text for token in ["frontend", "ui", "ux", "accessibility", "react"]):
+        tags.append("frontend")
+    if any(token in text for token in ["metric", "impact", "result", "kpi", "conversion"]):
+        tags.append("metrics")
+    if any(token in text for token in ["tradeoff", "constraint", "decision", "alternative"]):
+        tags.append("tradeoffs")
+    return tags or ["general"]
+
+
+def summarize_user_memory(memories: list[dict[str, Any]]) -> dict[str, Any]:
+    if not memories:
+        return {
+            "priority_targets": [],
+            "strong_dimensions": [],
+            "weak_dimensions": [],
+            "topic_strengths": [],
+            "topic_gaps": [],
+            "metric_signal": "unknown",
+            "star_signal": "unknown",
+        }
+
+    weakness_pressure: dict[str, float] = {}
+    strength_pressure: dict[str, float] = {}
+    topic_strength: dict[str, float] = {}
+    topic_gap: dict[str, float] = {}
+    metric_gap = 0.0
+    metric_strength = 0.0
+    star_gap = 0.0
+    total_weight = 0.0
+
+    for idx, item in enumerate(memories):
+        weight = max(0.35, 1.0 - (idx * 0.07))
+        total_weight += weight
+        memory_type = str(item.get("memory_type") or "")
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        dimensions = [str(dim) for dim in (meta.get("dimensions") or []) if str(dim).strip()]
+        topics = [str(tag) for tag in (meta.get("question_topic_tags") or []) if str(tag).strip()]
+
+        if memory_type == "weakness_pattern":
+            for dim in dimensions:
+                weakness_pressure[dim] = weakness_pressure.get(dim, 0.0) + weight
+            for topic in topics:
+                topic_gap[topic] = topic_gap.get(topic, 0.0) + weight
+        elif memory_type == "strength_pattern":
+            for dim in dimensions:
+                strength_pressure[dim] = strength_pressure.get(dim, 0.0) + weight
+            for topic in topics:
+                topic_strength[topic] = topic_strength.get(topic, 0.0) + weight
+        elif memory_type == "skill_gap":
+            if str(meta.get("focus") or "") == "metrics":
+                metric_gap += weight
+            if "structure" in dimensions or "clarity" in dimensions:
+                star_gap += weight * 0.9
+        elif memory_type == "role_strength":
+            if str(meta.get("focus") or "") == "metrics":
+                metric_strength += weight
+
+    all_dims = set(weakness_pressure) | set(strength_pressure)
+    pressure_rows = []
+    for dim in all_dims:
+        gap = weakness_pressure.get(dim, 0.0) - (0.75 * strength_pressure.get(dim, 0.0))
+        pressure_rows.append((dim, gap))
+    pressure_rows.sort(key=lambda item: item[1], reverse=True)
+
+    weak_dimensions = [dim for dim, gap in pressure_rows if gap > 0.2][:4]
+    strong_dimensions = [
+        dim
+        for dim, value in sorted(strength_pressure.items(), key=lambda item: item[1], reverse=True)
+        if value > 0.35
+    ][:4]
+
+    normalized_weight = max(1.0, total_weight)
+    metric_gap_ratio = metric_gap / normalized_weight
+    metric_strength_ratio = metric_strength / normalized_weight
+    star_gap_ratio = star_gap / normalized_weight
+
+    metric_signal = (
+        "needs_metrics"
+        if metric_gap_ratio > metric_strength_ratio + 0.08
+        else "has_metric_evidence" if metric_strength_ratio >= 0.12 else "neutral"
+    )
+    star_signal = "needs_star_structure" if star_gap_ratio >= 0.1 else "neutral"
+
+    topic_strengths = [topic for topic, _ in sorted(topic_strength.items(), key=lambda item: item[1], reverse=True)[:3]]
+    topic_gaps = [topic for topic, _ in sorted(topic_gap.items(), key=lambda item: item[1], reverse=True)[:3]]
+
+    priority_targets: list[str] = []
+    for dim in weak_dimensions:
+        if dim not in priority_targets:
+            priority_targets.append(dim)
+    if metric_signal == "needs_metrics" and "metrics" not in priority_targets:
+        priority_targets.insert(0, "metrics")
+    if star_signal == "needs_star_structure" and "structure" not in priority_targets:
+        priority_targets.append("structure")
+    if "system_design" in topic_gaps and "tradeoffs" not in priority_targets:
+        priority_targets.append("tradeoffs")
+    priority_targets = priority_targets[:5]
+
+    return {
+        "priority_targets": priority_targets,
+        "strong_dimensions": strong_dimensions,
+        "weak_dimensions": weak_dimensions,
+        "topic_strengths": topic_strengths,
+        "topic_gaps": topic_gaps,
+        "metric_signal": metric_signal,
+        "star_signal": star_signal,
+    }
+
+
+def build_coaching_policy(memory_profile: dict[str, Any]) -> dict[str, Any]:
+    priorities = [str(item) for item in (memory_profile.get("priority_targets") or []) if str(item).strip()]
+    policy = {
+        "priority_order": priorities,
+        "hint_bias": [],
+        "question_bias": [],
+        "feedback_rules": [],
+    }
+    if not priorities:
+        return policy
+    if "metrics" in priorities:
+        policy["hint_bias"].append("Always ask for one measurable outcome.")
+        policy["feedback_rules"].append("When no metric exists, provide one rewrite example with a metric.")
+    if "structure" in priorities or memory_profile.get("star_signal") == "needs_star_structure":
+        policy["hint_bias"].append("Use STAR scaffolding for behavioral answers.")
+        policy["feedback_rules"].append("Call out missing Situation/Task/Action/Result explicitly.")
+    if "technical_depth" in priorities:
+        policy["question_bias"].append("Prefer deeper implementation and tradeoff probes.")
+        policy["feedback_rules"].append("Request concrete system details: constraints, alternatives, validation.")
+    if "tradeoffs" in priorities:
+        policy["question_bias"].append("Inject tradeoff and architecture constraints into next question.")
+    return policy
 
 
 def load_user_memory(db: Session, user: User, limit: int = MEMORY_LIMIT) -> list[dict[str, Any]]:
@@ -81,7 +264,10 @@ def load_user_memory(db: Session, user: User, limit: int = MEMORY_LIMIT) -> list
 def enrich_config_with_memory(db: Session, user: User, config: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(config)
     memories = load_user_memory(db, user)
+    memory_profile = summarize_user_memory(memories)
     enriched["user_memory"] = memories
+    enriched["memory_profile"] = memory_profile
+    enriched["coaching_policy"] = build_coaching_policy(memory_profile)
     enriched["cv_facts"] = [
         item["content"]
         for item in memories
@@ -90,10 +276,16 @@ def enrich_config_with_memory(db: Session, user: User, config: dict[str, Any]) -
     return enriched
 
 
-def _memory_content_from_evaluation(question: str, answer_text: str, evaluation: dict[str, Any]) -> list[tuple[str, str, float, dict[str, Any]]]:
+def _memory_content_from_evaluation(
+    question: str,
+    answer_text: str,
+    evaluation: dict[str, Any],
+    turn_id: Optional[int] = None,
+) -> list[tuple[str, str, float, dict[str, Any]]]:
     scorecard = evaluation.get("scorecard") or {}
     low_dims = [name for name, value in sorted(scorecard.items(), key=lambda item: item[1]) if int(value or 0) < 65][:3]
     high_dims = [name for name, value in sorted(scorecard.items(), key=lambda item: item[1], reverse=True) if int(value or 0) >= 78][:2]
+    topics = _topic_tags_from_question(question)
     memories: list[tuple[str, str, float, dict[str, Any]]] = []
     if low_dims:
         memories.append(
@@ -101,7 +293,15 @@ def _memory_content_from_evaluation(question: str, answer_text: str, evaluation:
                 "weakness_pattern",
                 f"User often needs practice in {', '.join(dim.replace('_', ' ') for dim in low_dims)}. Latest question: {question}",
                 0.72,
-                {"dimensions": low_dims, "score": evaluation.get("score")},
+                {
+                    "dimensions": low_dims,
+                    "score": evaluation.get("score"),
+                    "signal_kind": "weakness",
+                    "question_topic_tags": topics,
+                    "evidence_turn_id": turn_id,
+                    "recency_weight": 1.0,
+                    "confidence": round(min(1.0, max(0.35, (100 - int(evaluation.get("score", 0))) / 100)), 2),
+                },
             )
         )
     if high_dims:
@@ -110,7 +310,15 @@ def _memory_content_from_evaluation(question: str, answer_text: str, evaluation:
                 "strength_pattern",
                 f"User shows strength in {', '.join(dim.replace('_', ' ') for dim in high_dims)}. Reuse this strength in harder questions.",
                 0.62,
-                {"dimensions": high_dims, "score": evaluation.get("score")},
+                {
+                    "dimensions": high_dims,
+                    "score": evaluation.get("score"),
+                    "signal_kind": "strength",
+                    "question_topic_tags": topics,
+                    "evidence_turn_id": turn_id,
+                    "recency_weight": 1.0,
+                    "confidence": round(min(1.0, max(0.35, int(evaluation.get("score", 0)) / 100)), 2),
+                },
             )
         )
     red_flags = evaluation.get("red_flags") or []
@@ -120,18 +328,83 @@ def _memory_content_from_evaluation(question: str, answer_text: str, evaluation:
                 "risk_signal",
                 f"User answer risk signals: {', '.join(str(flag).replace('_', ' ') for flag in red_flags[:3])}.",
                 0.68,
-                {"red_flags": red_flags[:5]},
+                {
+                    "red_flags": red_flags[:5],
+                    "signal_kind": "risk",
+                    "question_topic_tags": topics,
+                    "evidence_turn_id": turn_id,
+                    "recency_weight": 1.0,
+                    "confidence": 0.72,
+                },
             )
         )
     if any(ch.isdigit() for ch in answer_text):
-        memories.append(("role_strength", "User has used measurable metrics in at least one answer.", 0.58, {"question": question}))
+        memories.append(
+            (
+                "role_strength",
+                "User has used measurable metrics in at least one answer.",
+                0.58,
+                {
+                    "question": question,
+                    "focus": "metrics",
+                    "signal_kind": "strength",
+                    "question_topic_tags": topics,
+                    "evidence_turn_id": turn_id,
+                    "recency_weight": 1.0,
+                    "confidence": 0.65,
+                },
+            )
+        )
     else:
-        memories.append(("skill_gap", "User should add measurable metrics or concrete impact to future answers.", 0.7, {"question": question}))
+        needs_star = bool(re.search(r"\b(situation|task|action|result)\b", answer_text.lower())) is False
+        memories.append(
+            (
+                "skill_gap",
+                "User should add measurable metrics or concrete impact to future answers.",
+                0.7,
+                {
+                    "question": question,
+                    "focus": "metrics",
+                    "dimensions": ["metrics"],
+                    "signal_kind": "weakness",
+                    "question_topic_tags": topics,
+                    "evidence_turn_id": turn_id,
+                    "recency_weight": 1.0,
+                    "confidence": 0.74,
+                },
+            )
+        )
+        if needs_star:
+            memories.append(
+                (
+                    "skill_gap",
+                    "Behavioral-style answers should use explicit STAR structure.",
+                    0.66,
+                    {
+                        "question": question,
+                        "focus": "star_structure",
+                        "dimensions": ["structure", "clarity"],
+                        "signal_kind": "weakness",
+                        "question_topic_tags": topics,
+                        "evidence_turn_id": turn_id,
+                        "recency_weight": 1.0,
+                        "confidence": 0.7,
+                    },
+                )
+            )
     return memories[:4]
 
 
 def store_user_memory(db: Session, user: User, session: InterviewSession, question: str, answer_text: str, evaluation: dict[str, Any]) -> None:
-    for memory_type, content, score, meta in _memory_content_from_evaluation(question, answer_text, evaluation):
+    turn_id = None
+    if session.turns:
+        turn_id = sorted(session.turns, key=lambda t: t.id)[-1].id
+    for memory_type, content, score, meta in _memory_content_from_evaluation(
+        question,
+        answer_text,
+        evaluation,
+        turn_id=turn_id,
+    ):
         db.add(
             UserMemoryItem(
                 user_id=user.id,
@@ -236,6 +509,7 @@ def build_completed_result_json(
             "strengths": last_evaluation["strengths"],
             "weaknesses": last_evaluation["weaknesses"],
             "suggestions": last_evaluation["suggestions"],
+            "suggestion_citations": last_evaluation.get("suggestion_citations", []),
             "recommended_next_steps": last_evaluation["recommended_next_steps"],
             "feedback": last_evaluation["feedback"],
             "retrieval_evidence": last_evaluation.get("retrieval_evidence", []),
@@ -244,6 +518,7 @@ def build_completed_result_json(
             "citations": last_evaluation.get("citations", []),
             "citation_notes": last_evaluation.get("citation_notes", []),
             "rag_evaluation": last_evaluation.get("rag_evaluation", {}),
+            "rag_query_trace": last_evaluation.get("rag_query_trace", {}),
             "reference_answers": reference_answers or [],
         },
         "current_question": None,
@@ -305,8 +580,17 @@ def create_session(
 ) -> tuple[InterviewSession, str, str]:
     config = normalize_config(config)
     avoid_questions = recent_user_questions(db, user)
-    first_question_rag = _question_retrieval(profession, config, [], avoid_questions)
-    question_context, first_q = generate_first_question(profession, config, avoid_questions=avoid_questions)
+    question_context = build_question_context(profession, config)
+    first_q, first_question_rag, first_plan = _generate_planned_question(
+        db,
+        user,
+        profession,
+        config,
+        asked_topics=[],
+        avoid_questions=avoid_questions,
+        previous_turns=[],
+    )
+    question_rationale = str(first_plan.get("question_rationale") or "")
 
     session = InterviewSession(
         user_id=user.id,
@@ -318,6 +602,20 @@ def create_session(
             "final_summary": None,
             "question_context": question_context,
             "question_rag": first_question_rag,
+            "current_question_plan": first_plan,
+            "question_rationale": question_rationale,
+            "question_rag_history": [
+                {
+                    "turn_index": 1,
+                    "question": first_q,
+                    "phase": "question_generation",
+                    "evidence": first_question_rag.get("evidence", []),
+                    "query_trace": first_question_rag.get("query_trace", {}),
+                    "summary": first_question_rag.get("summary", ""),
+                    "quality": first_question_rag.get("quality", {}),
+                }
+            ],
+            "turn_rag_audits": [],
             "current_question": first_q,
             "turns": [],
             "asked_topics": [extract_topic_hint(first_q)],
@@ -434,6 +732,7 @@ def submit_answer(
             "strengths": evaluation["strengths"],
             "weaknesses": evaluation["weaknesses"],
             "suggestions": evaluation["suggestions"],
+            "suggestion_citations": evaluation.get("suggestion_citations", []),
             "recommended_next_steps": evaluation["recommended_next_steps"],
             "retrieval_evidence": evaluation.get("retrieval_evidence", []),
             "rag_summary": evaluation.get("rag_summary"),
@@ -455,6 +754,25 @@ def submit_answer(
     max_turns = target_question_count(config["interview_length"])
     current_question_index = len(answered_turns) + 1
 
+    turn_rag_audits = list(session_json.get("turn_rag_audits") or [])
+    turn_rag_audits.append(
+        {
+            "phase": "answer_evaluation",
+            "turn_index": len(answered_turns),
+            "turn_id": current_turn.id,
+            "question": current_turn.question,
+            "answer_preview": clean_answer[:300],
+            "evidence": evaluation.get("retrieval_evidence", []),
+            "retrieval_quality": evaluation.get("retrieval_quality", {}),
+            "rag_summary": evaluation.get("rag_summary", ""),
+            "query_trace": evaluation.get("rag_query_trace", {}),
+            "rag_evaluation": evaluation.get("rag_evaluation", {}),
+            "citations": evaluation.get("citations", []),
+        }
+    )
+    turn_rag_audits = turn_rag_audits[-30:]
+    question_rag_history = list(session_json.get("question_rag_history") or [])
+
     next_question = evaluation["next_question"]
     done = evaluation["done"]
 
@@ -466,23 +784,38 @@ def submit_answer(
     asked_questions = [t.question for t in sorted(session.turns, key=lambda t: t.id) if t.question]
     recent_questions = recent_user_questions(db, user, exclude_session_id=session.id)
     avoid_questions = (recent_questions + asked_questions)[-RECENT_SESSION_QUESTION_LIMIT:]
-    fallback_question = generate_bank_question(session.profession, config, avoid_questions=avoid_questions)
-    question_config = enrich_config_with_memory(db, user, config)
-    question_rag = _question_retrieval(session.profession, question_config, asked_topics, avoid_questions)
-    if next_question is None and not done:
-        next_question = (
-            generate_dynamic_question(
-                session.profession,
-                question_config,
-                asked_topics,
-                avoid_questions,
-                retrieval_context=question_rag["context"],
-                rag_summary=question_rag["summary"],
-            )
-            or fallback_question
-        )
+    previous_turns = serialize_answered_turns(answered_turns)
+    question_rag: dict[str, Any] = {}
+    question_plan: dict[str, Any] = {}
     if not done:
-        next_question = dedupe_question(next_question, avoid_questions, fallback_question)
+        planned_q, question_rag, question_plan = _generate_planned_question(
+            db,
+            user,
+            session.profession,
+            config,
+            asked_topics,
+            avoid_questions,
+            previous_turns,
+        )
+        if next_question is None:
+            next_question = planned_q
+        else:
+            fallback_question = generate_bank_question(session.profession, config, avoid_questions=avoid_questions)
+            next_question = dedupe_question(next_question, avoid_questions, fallback_question)
+
+    if not done and next_question:
+        question_rag_history.append(
+            {
+                "turn_index": len(answered_turns) + 1,
+                "question": next_question,
+                "phase": "question_generation",
+                "evidence": question_rag.get("evidence", []),
+                "query_trace": question_rag.get("query_trace", {}),
+                "summary": question_rag.get("summary", ""),
+                "quality": question_rag.get("quality", {}),
+            }
+        )
+    question_rag_history = question_rag_history[-30:]
 
     if done:
         reference_answers = _build_reference_answers(session.profession, config, sorted(session.turns, key=lambda t: t.id))
@@ -492,6 +825,8 @@ def submit_answer(
             evaluation,
             reference_answers=reference_answers,
         )
+        session.result_json["turn_rag_audits"] = turn_rag_audits
+        session.result_json["question_rag_history"] = question_rag_history
         db.add(session)
         db.commit()
 
@@ -516,6 +851,7 @@ def submit_answer(
             "strengths": evaluation["strengths"],
             "weaknesses": evaluation["weaknesses"],
             "suggestions": evaluation["suggestions"],
+            "suggestion_citations": evaluation.get("suggestion_citations", []),
             "recommended_next_steps": evaluation["recommended_next_steps"],
             "retrieval_evidence": evaluation.get("retrieval_evidence", []),
             "rag_summary": evaluation.get("rag_summary"),
@@ -541,6 +877,10 @@ def submit_answer(
     session.result_json["attempts_by_turn"] = attempts_by_turn
     session.result_json["attempt_logs"] = attempt_logs[-20:]
     session.result_json["question_rag"] = question_rag
+    session.result_json["current_question_plan"] = question_plan
+    session.result_json["question_rationale"] = str(question_plan.get("question_rationale") or "")
+    session.result_json["turn_rag_audits"] = turn_rag_audits
+    session.result_json["question_rag_history"] = question_rag_history
     db.add(session)
     db.commit()
 
@@ -565,6 +905,7 @@ def submit_answer(
         "strengths": evaluation["strengths"],
         "weaknesses": evaluation["weaknesses"],
         "suggestions": evaluation["suggestions"],
+        "suggestion_citations": evaluation.get("suggestion_citations", []),
         "recommended_next_steps": evaluation["recommended_next_steps"],
         "retrieval_evidence": evaluation.get("retrieval_evidence", []),
         "rag_summary": evaluation.get("rag_summary"),
@@ -573,6 +914,7 @@ def submit_answer(
         "citation_notes": evaluation.get("citation_notes", []),
         "rag_evaluation": evaluation.get("rag_evaluation", {}),
         "question_context": _session_question_context(session),
+        "question_rationale": str(question_plan.get("question_rationale") or ""),
     }
 
 
@@ -613,6 +955,7 @@ def pass_current_question(
             "strengths": [],
             "weaknesses": ["Multiple questions were skipped. Complete more answers for a reliable evaluation."],
             "suggestions": ["Answer more questions to get meaningful coaching."],
+            "suggestion_citations": [],
             "recommended_next_steps": ["Run another session and avoid pass usage where possible."],
             "feedback": "Session ended after pass usage and question limit.",
             "retrieval_evidence": [],
@@ -649,6 +992,7 @@ def pass_current_question(
             "strengths": [],
             "weaknesses": ["Session contains skipped questions."],
             "suggestions": ["Run another session and answer all questions for better feedback."],
+            "suggestion_citations": [],
             "recommended_next_steps": ["Retry with full answers."],
             "retrieval_evidence": [],
             "question_context": _session_question_context(session),
@@ -658,21 +1002,16 @@ def pass_current_question(
     asked_questions = [t.question for t in sorted(session.turns, key=lambda t: t.id) if t.question]
     recent_questions = recent_user_questions(db, user, exclude_session_id=session.id)
     avoid_questions = (recent_questions + asked_questions)[-RECENT_SESSION_QUESTION_LIMIT:]
-    fallback_question = generate_bank_question(session.profession, config, avoid_questions=avoid_questions)
-    question_config = enrich_config_with_memory(db, user, config)
-    question_rag = _question_retrieval(session.profession, question_config, asked_topics, avoid_questions)
-    next_question = (
-        generate_dynamic_question(
-            session.profession,
-            question_config,
-            asked_topics,
-            avoid_questions,
-            retrieval_context=question_rag["context"],
-            rag_summary=question_rag["summary"],
-        )
-        or fallback_question
+    previous_turns = serialize_answered_turns(answered_turns)
+    next_question, question_rag, question_plan = _generate_planned_question(
+        db,
+        user,
+        session.profession,
+        config,
+        asked_topics,
+        avoid_questions,
+        previous_turns,
     )
-    next_question = dedupe_question(next_question, avoid_questions, fallback_question)
 
     new_turn = InterviewTurn(session_id=session.id, question=next_question, answer_text=None)
     db.add(new_turn)
@@ -684,6 +1023,21 @@ def pass_current_question(
     session.result_json["attempts_by_turn"] = dict(session_json.get("attempts_by_turn", {}))
     session.result_json["attempt_logs"] = list(session_json.get("attempt_logs", []))
     session.result_json["question_rag"] = question_rag
+    session.result_json["current_question_plan"] = question_plan
+    session.result_json["question_rationale"] = str(question_plan.get("question_rationale") or "")
+    question_rag_history = list(session_json.get("question_rag_history") or [])
+    question_rag_history.append(
+        {
+            "turn_index": len(answered_turns) + 1,
+            "question": next_question,
+            "phase": "question_generation",
+            "evidence": question_rag.get("evidence", []),
+            "query_trace": question_rag.get("query_trace", {}),
+            "summary": question_rag.get("summary", ""),
+            "quality": question_rag.get("quality", {}),
+        }
+    )
+    session.result_json["question_rag_history"] = question_rag_history[-30:]
     db.add(session)
     db.commit()
 
@@ -708,9 +1062,11 @@ def pass_current_question(
         "strengths": [],
         "weaknesses": ["Current question was skipped."],
         "suggestions": ["Use remaining passes carefully and answer next question in detail."],
+        "suggestion_citations": [],
         "recommended_next_steps": [],
         "retrieval_evidence": [],
         "question_context": _session_question_context(session),
+        "question_rationale": str(question_plan.get("question_rationale") or ""),
     }
 
 

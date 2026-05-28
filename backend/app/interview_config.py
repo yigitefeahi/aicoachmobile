@@ -262,6 +262,7 @@ def generate_dynamic_question(
     asked_questions: list[str],
     retrieval_context: str = "",
     rag_summary: str = "",
+    question_plan: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
     payload = {
         "profession": profession,
@@ -277,7 +278,10 @@ def generate_dynamic_question(
         "retrieved_question_context": retrieval_context,
         "rag_summary": rag_summary,
         "user_memory_signals": config.get("user_memory", [])[:8],
+        "memory_profile": config.get("memory_profile", {}),
+        "coaching_policy": config.get("coaching_policy", {}),
         "cv_facts": config.get("cv_facts", [])[:8],
+        "question_plan": question_plan or {},
         "instructions": (
             "Generate one fresh interview question only. "
             "Avoid repeating previous topics or any question semantically similar to asked_questions. "
@@ -286,6 +290,8 @@ def generate_dynamic_question(
             "Use retrieved_question_context when it provides relevant role, rubric, framework, or company evidence. "
             "Use role_profile themes and evaluation_focus to make the question specific to the selected profession. "
             "Use user_memory_signals and cv_facts to target the user's gaps without exposing private details verbatim. "
+            "Use memory_profile and coaching_policy to prioritize persistent weak dimensions (metrics, structure, technical depth, tradeoffs). "
+            "Use question_plan.question_intent and skill_coverage.skill_gaps to probe missing evidence (e.g. CV mentions Redis but consistency was never demonstrated). "
             "Prefer questions that test missing evidence: metrics, tradeoffs, validation, ownership, or role-specific skills. "
             "If mode is case, ask a case-style prompt with enough context to solve."
         ),

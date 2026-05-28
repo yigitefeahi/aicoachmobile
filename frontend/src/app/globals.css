@@ -275,6 +275,95 @@ button.card-soft:hover {
   border-color: rgba(245, 239, 231, 0.2);
 }
 
+.cv-role-fit-panel {
+  margin-top: 0.75rem;
+  border-radius: 24px;
+  border: 1px solid var(--card-border);
+  background: var(--card);
+  color: var(--foreground);
+  padding: 1rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  box-shadow: 0 10px 24px rgba(31, 41, 51, 0.06);
+}
+
+.cv-role-fit-title {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.cv-role-fit-meta,
+.cv-role-fit-copy,
+.cv-role-fit-evidence {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.cv-role-fit-card {
+  border-radius: 18px;
+  border: 1px solid var(--card-border);
+  background: var(--card-soft);
+  padding: 0.75rem;
+}
+
+.cv-role-fit-name {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.cv-role-fit-pill {
+  border-radius: 999px;
+  border: 1px solid var(--card-border);
+  background: var(--card);
+  color: var(--muted);
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.cv-suggestion-line {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+:root[data-theme="dark"] .cv-role-fit-panel {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e5e7eb;
+}
+
+:root[data-theme="dark"] .cv-role-fit-title,
+:root[data-theme="dark"] .cv-role-fit-name {
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .cv-role-fit-meta,
+:root[data-theme="dark"] .cv-role-fit-copy {
+  color: #cbd5e1;
+}
+
+:root[data-theme="dark"] .cv-role-fit-evidence {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .cv-role-fit-card {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="dark"] .cv-role-fit-pill {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+}
+
+:root[data-theme="dark"] .cv-suggestion-line {
+  color: #67e8f9;
+}
+
 .input,
 .select {
   width: 100%;
@@ -700,5 +789,48 @@ button.card-soft:hover {
 
   .badge {
     padding: 7px 10px;
+  }
+}
+
+/* Presence — Zoom-style interview room */
+.presence-room {
+  color: #f3f4f6;
+}
+
+.presence-room .glass {
+  background: rgba(20, 20, 20, 0.92);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+}
+
+.presence-mic-bar {
+  animation: presence-mic-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes presence-mic-pulse {
+  0%,
+  100% {
+    transform: translateX(-120%);
+    opacity: 0.35;
+  }
+  50% {
+    transform: translateX(220%);
+    opacity: 1;
+  }
+}
+
+.presence-connecting-dot {
+  animation: presence-connecting 1.2s ease-in-out infinite;
+}
+
+@keyframes presence-connecting {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
   }
 }

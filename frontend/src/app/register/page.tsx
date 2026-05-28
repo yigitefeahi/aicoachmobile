@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiFetch, API_BASE, setCsrfToken } from "@/lib/api";
+import { apiFetch, API_BASE, setAccessToken, setCsrfToken } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 export default function RegisterPage() {
@@ -40,7 +40,8 @@ export default function RegisterPage() {
         body: JSON.stringify({ name, email, password, profession }),
       });
 
-      const data = (await res.json()) as { csrf_token?: string };
+      const data = (await res.json()) as { access_token?: string; csrf_token?: string };
+      if (data.access_token) setAccessToken(data.access_token);
       if (data.csrf_token) setCsrfToken(data.csrf_token);
       router.push("/onboarding");
     } catch (e: unknown) {

@@ -36,6 +36,99 @@ COMPANY_PACKS: dict[str, dict[str, Any]] = {
         "rubric_focus": ["craft", "simplicity", "cross-functional influence", "quality"],
         "question_styles": ["product judgement", "detail orientation", "collaboration"],
     },
+    "aselsan": {
+        "label": "Aselsan",
+        "rubric_focus": ["engineering rigor", "security awareness", "process discipline", "system reliability"],
+        "question_styles": ["defense systems", "quality assurance", "technical depth", "team coordination"],
+    },
+    "tusas": {
+        "label": "TUSAŞ",
+        "rubric_focus": ["aerospace quality", "safety culture", "engineering fundamentals", "documentation"],
+        "question_styles": ["design verification", "risk management", "cross-disciplinary work", "precision"],
+    },
+    "turkcell": {
+        "label": "Turkcell",
+        "rubric_focus": ["digital product impact", "customer metrics", "scale", "agile delivery"],
+        "question_styles": ["telecom scale", "product experimentation", "data-driven decisions", "ownership"],
+    },
+    "turktelekom": {
+        "label": "Turk Telekom",
+        "rubric_focus": ["enterprise reliability", "infrastructure depth", "transformation", "stakeholder alignment"],
+        "question_styles": ["network and platform", "large-org delivery", "operational stability", "customer focus"],
+    },
+    "trendyol": {
+        "label": "Trendyol",
+        "rubric_focus": ["e-commerce scale", "performance", "execution speed", "measurable impact"],
+        "question_styles": ["high traffic systems", "marketplace logic", "experimentation", "ownership"],
+    },
+    "havelsan": {
+        "label": "Havelsan",
+        "rubric_focus": ["defense software quality", "security", "systems thinking", "verification"],
+        "question_styles": ["mission-critical systems", "integration", "technical documentation", "reliability"],
+    },
+    "getir": {
+        "label": "Getir",
+        "rubric_focus": ["speed", "operational efficiency", "ownership", "practical tradeoffs"],
+        "question_styles": ["hypergrowth delivery", "logistics tech", "incident handling", "metrics"],
+    },
+    "hepsiburada": {
+        "label": "Hepsiburada",
+        "rubric_focus": ["marketplace scale", "customer experience", "performance", "collaboration"],
+        "question_styles": ["e-commerce systems", "seller/buyer flows", "reliability", "data-informed product"],
+    },
+    "garanti": {
+        "label": "Garanti BBVA",
+        "rubric_focus": ["security and compliance", "financial correctness", "reliability", "customer trust"],
+        "question_styles": ["digital banking", "fraud prevention", "regulated delivery", "audit readiness"],
+    },
+    "akbank": {
+        "label": "Akbank",
+        "rubric_focus": ["banking reliability", "security", "data integrity", "enterprise delivery"],
+        "question_styles": ["core banking adjacency", "digital channels", "risk controls", "stakeholder alignment"],
+    },
+    "papara": {
+        "label": "Papara",
+        "rubric_focus": ["fintech speed", "payment correctness", "security", "mobile product impact"],
+        "question_styles": ["payments", "wallet flows", "fraud edges", "fast iteration"],
+    },
+    "peak": {
+        "label": "Peak Games",
+        "rubric_focus": ["gamecraft", "performance", "live ops", "player metrics"],
+        "question_styles": ["mobile games", "retention", "A/B experimentation", "technical polish"],
+    },
+    "dreamgames": {
+        "label": "Dream Games",
+        "rubric_focus": ["game systems", "craft", "scale", "data-informed design"],
+        "question_styles": ["puzzle games", "live content", "performance", "team collaboration"],
+    },
+    "pegasus": {
+        "label": "Pegasus",
+        "rubric_focus": ["operational efficiency", "reliability", "customer experience", "cost awareness"],
+        "question_styles": ["airline ops tech", "booking and pricing adjacency", "incident handling", "scale events"],
+    },
+    "microsoft": {
+        "label": "Microsoft",
+        "rubric_focus": ["growth mindset", "technical depth", "collaboration", "customer impact"],
+        "question_styles": ["cloud and enterprise", "system design", "ambiguity", "cross-team influence"],
+    },
+    "netflix": {
+        "label": "Netflix",
+        "rubric_focus": ["ownership", "judgment", "impact", "freedom and responsibility"],
+        "question_styles": ["high trust culture", "context over control", "production excellence", "candid feedback"],
+    },
+}
+
+
+COMPANY_ALIASES: dict[str, str] = {
+    "trktelekom": "turktelekom",
+    "turktelekom": "turktelekom",
+    "tusa": "tusas",
+    "garantibbva": "garanti",
+    "garantiteknoloji": "garanti",
+    "akode": "akbank",
+    "peakgames": "peak",
+    "zynga": "peak",
+    "dreamgame": "dreamgames",
 }
 
 
@@ -71,6 +164,8 @@ HEDGING_PATTERNS = ["maybe", "probably", "i think", "i guess", "might", "somewha
 def normalize_company_pack(target_company: str | None, company_pack: str | None = None) -> str:
     raw = (company_pack or target_company or "general").strip().lower()
     compact = re.sub(r"[^a-z0-9]+", "", raw)
+    if compact in COMPANY_ALIASES:
+        return COMPANY_ALIASES[compact]
     for key, pack in COMPANY_PACKS.items():
         if compact == key or compact == re.sub(r"[^a-z0-9]+", "", pack["label"].lower()):
             return key
@@ -104,11 +199,71 @@ def build_case_question_prefix(config: dict[str, Any]) -> str:
     return f"{label} case: "
 
 
+def _memory_profile_from_signals(user_memory: list[dict[str, Any]] | None) -> dict[str, Any]:
+    user_memory = user_memory or []
+    if not user_memory:
+        return {"priority_targets": [], "metric_signal": "neutral", "star_signal": "neutral", "topic_gaps": [], "topic_strengths": []}
+
+    weak_count: dict[str, float] = {}
+    strong_count: dict[str, float] = {}
+    topic_gaps: dict[str, float] = {}
+    topic_strengths: dict[str, float] = {}
+    metric_gap = 0.0
+    metric_ok = 0.0
+    star_gap = 0.0
+
+    for idx, item in enumerate(user_memory):
+        weight = max(0.35, 1.0 - (idx * 0.08))
+        memory_type = str(item.get("memory_type") or "")
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        dims = [str(dim) for dim in (meta.get("dimensions") or []) if str(dim).strip()]
+        topics = [str(topic) for topic in (meta.get("question_topic_tags") or []) if str(topic).strip()]
+
+        if memory_type == "weakness_pattern":
+            for dim in dims:
+                weak_count[dim] = weak_count.get(dim, 0.0) + weight
+            for topic in topics:
+                topic_gaps[topic] = topic_gaps.get(topic, 0.0) + weight
+        elif memory_type == "strength_pattern":
+            for dim in dims:
+                strong_count[dim] = strong_count.get(dim, 0.0) + weight
+            for topic in topics:
+                topic_strengths[topic] = topic_strengths.get(topic, 0.0) + weight
+        elif memory_type == "skill_gap":
+            if str(meta.get("focus") or "") == "metrics":
+                metric_gap += weight
+            if str(meta.get("focus") or "") == "star_structure":
+                star_gap += weight
+        elif memory_type == "role_strength" and str(meta.get("focus") or "") == "metrics":
+            metric_ok += weight
+
+    pressure_rows = []
+    for dim in set(weak_count) | set(strong_count):
+        pressure_rows.append((dim, weak_count.get(dim, 0.0) - (0.75 * strong_count.get(dim, 0.0))))
+    pressure_rows.sort(key=lambda item: item[1], reverse=True)
+    priority_targets = [dim for dim, pressure in pressure_rows if pressure > 0.2][:4]
+    if metric_gap > metric_ok + 0.2 and "metrics" not in priority_targets:
+        priority_targets.insert(0, "metrics")
+    if star_gap > 0.15 and "structure" not in priority_targets:
+        priority_targets.append("structure")
+
+    return {
+        "priority_targets": priority_targets[:5],
+        "metric_signal": "needs_metrics" if metric_gap > metric_ok + 0.2 else "neutral",
+        "star_signal": "needs_star_structure" if star_gap > 0.15 else "neutral",
+        "topic_gaps": [topic for topic, _ in sorted(topic_gaps.items(), key=lambda item: item[1], reverse=True)[:3]],
+        "topic_strengths": [topic for topic, _ in sorted(topic_strengths.items(), key=lambda item: item[1], reverse=True)[:3]],
+    }
+
+
 def build_hint(question: str, config: dict[str, Any]) -> dict[str, Any]:
     profession = str(config.get("profession") or "")
     focus = str(config.get("focus_area") or "Mixed")
     mode = str(config.get("mode") or "text")
     company = company_pack_payload(normalize_company_pack(config.get("target_company"), config.get("company_pack")))
+    memory_profile = config.get("memory_profile") if isinstance(config.get("memory_profile"), dict) else _memory_profile_from_signals(
+        config.get("user_memory") if isinstance(config.get("user_memory"), list) else []
+    )
     retrieval_evidence: list[dict[str, Any]] = []
     rag_summary = ""
     retrieval_quality: dict[str, Any] = {}
@@ -146,11 +301,23 @@ def build_hint(question: str, config: dict[str, Any]) -> dict[str, Any]:
         for item in retrieval_evidence
         if str(item.get("preview", "")).strip()
     ][:2]
+    if memory_profile.get("metric_signal") == "needs_metrics":
+        bullets.insert(0, "Your recent answers miss measurable outcomes: include one metric and why it matters.")
+    if memory_profile.get("star_signal") == "needs_star_structure":
+        bullets.insert(0, "Use explicit STAR framing so each part of the answer is easy to score.")
+    priority_targets = [str(item) for item in (memory_profile.get("priority_targets") or []) if str(item).strip()]
     if evidence_bullets:
         bullets = (evidence_bullets + bullets)[:5]
+    else:
+        bullets = bullets[:5]
+    personalized_hint = (
+        f"Frame this for {company['label']} by emphasizing {', '.join(company['rubric_focus'][:2])}."
+    )
+    if priority_targets:
+        personalized_hint = f"{personalized_hint} Personal focus: {', '.join(priority_targets[:2])}."
     return {
         "question": question,
-        "hint": f"Frame this for {company['label']} by emphasizing {', '.join(company['rubric_focus'][:2])}.",
+        "hint": personalized_hint,
         "bullets": bullets,
         "retrieval_evidence": retrieval_evidence,
         "rag_summary": rag_summary,
@@ -224,6 +391,7 @@ def build_roadmap(
     days_left = max(3, min(30, (target - today).days or 14))
     company = company_pack_payload(normalize_company_pack(target_company, target_company))
     focus = focus_area or "Mixed"
+    memory_profile = _memory_profile_from_signals(user_memory)
     retrieval_evidence: list[dict[str, Any]] = []
     rag_summary = ""
     retrieval_quality: dict[str, Any] = {}
@@ -258,6 +426,15 @@ def build_roadmap(
         ("Tone pass", "Reduce filler/hedging and keep answers under two minutes."),
         ("Final simulation", "Run a timed interview and review the scorecard."),
     ]
+    priority_targets = [str(item) for item in (memory_profile.get("priority_targets") or []) if str(item).strip()]
+    if memory_profile.get("metric_signal") == "needs_metrics":
+        templates.insert(1, ("Metric upgrade", "Rewrite two answers with concrete before/after outcomes and measurable impact."))
+    if memory_profile.get("star_signal") == "needs_star_structure":
+        templates.insert(1, ("STAR structure", "Convert one weak behavioral answer into explicit STAR format."))
+    if "technical_depth" in priority_targets:
+        templates.insert(2, ("Technical depth sprint", "Add constraints, alternatives, and validation to one technical answer."))
+    if "tradeoffs" in priority_targets or "system_design" in (memory_profile.get("topic_gaps") or []):
+        templates.insert(3, ("System design tradeoffs", "Practice one architecture question with tradeoff justification and scaling risks."))
     schedule = []
     for i in range(days_left):
         title, detail = templates[i % len(templates)]
@@ -269,6 +446,7 @@ def build_roadmap(
                 "detail": detail,
                 "focus": focus if i % 2 == 0 else company["label"],
                 "evidence_note": evidence_notes[i % len(evidence_notes)] if evidence_notes else None,
+                "priority_target": priority_targets[i % len(priority_targets)] if priority_targets else None,
             }
         )
     return {
@@ -301,6 +479,7 @@ def build_weekly_drills(
     )
     company = roadmap["target_company"]
     focus = focus_area or "Mixed"
+    memory_profile = _memory_profile_from_signals(user_memory)
     retrieval_evidence = roadmap.get("retrieval_evidence", [])
     evidence_notes = [
         str(item.get("preview", "")).strip()
@@ -358,6 +537,15 @@ def build_weekly_drills(
     for week in range(weeks):
         base = templates[week % len(templates)]
         actions = list(base["actions"])
+        priority_targets = [str(item) for item in (memory_profile.get("priority_targets") or []) if str(item).strip()]
+        if memory_profile.get("metric_signal") == "needs_metrics":
+            actions.insert(0, "Add one metric to every answer draft before you submit.")
+        if memory_profile.get("star_signal") == "needs_star_structure":
+            actions.insert(0, "Use STAR headings while drafting behavioral answers.")
+        if "technical_depth" in priority_targets:
+            actions.append("For each technical answer, include one rejected alternative and why.")
+        if "tradeoffs" in priority_targets:
+            actions.append("Explicitly name one tradeoff and one risk mitigation.")
         if evidence_notes:
             actions = [f"Use RAG evidence: {evidence_notes[week % len(evidence_notes)][:180]}"] + actions
         drills.append(

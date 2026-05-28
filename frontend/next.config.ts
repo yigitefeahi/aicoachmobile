@@ -1,23 +1,29 @@
 import type { NextConfig } from "next";
 
+const apiBase = (process.env.NEXT_PUBLIC_API_BASE || "").replace(/\/$/, "");
+
 /** Explicit hosts — wildcards like `http://localhost:*` are not reliably supported and can block API fetch(). */
+const connectSrc = [
+  "'self'",
+  "http://127.0.0.1:8000",
+  "http://localhost:8000",
+  "http://127.0.0.1:3000",
+  "http://localhost:3000",
+  "ws://127.0.0.1:3000",
+  "ws://localhost:3000",
+  "ws://127.0.0.1:3001",
+  "ws://localhost:3001",
+  "https://cdn.jsdelivr.net",
+];
+if (apiBase) connectSrc.push(apiBase);
+
 const csp = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  [
-    "connect-src 'self'",
-    "http://127.0.0.1:8000",
-    "http://localhost:8000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3000",
-    "ws://127.0.0.1:3000",
-    "ws://localhost:3000",
-    "ws://127.0.0.1:3001",
-    "ws://localhost:3001",
-  ].join(" "),
+  [`connect-src ${connectSrc.join(" ")}`].join(" "),
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

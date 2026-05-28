@@ -154,6 +154,7 @@ export default function DashboardPage() {
         question: data.first_question,
       });
       if (data.question_context) query.set("questionContext", data.question_context);
+      if (data.question_rationale) query.set("questionRationale", data.question_rationale);
       router.push(`/interview/live?${query.toString()}`);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Could not start instant session");
@@ -346,7 +347,7 @@ export default function DashboardPage() {
                     <UserRound size={22} />
                     <h3 className="mt-4 font-semibold">Mock Interview Room</h3>
                     <p className="mt-2 text-sm text-slate-300">
-                      Simulated interviewer + spoken questions; you answer without webcam.
+                      3D interviewer with lip-sync; speak naturally and answers auto-submit on pause.
                     </p>
                     <span className="mt-auto pt-5 text-sm font-medium text-cyan-300">Presence Interview</span>
                   </div>

@@ -149,6 +149,145 @@ def _build_score_explanation(score: int, sub_scores: dict[str, int], red_flags: 
     return base
 
 
+def _dedupe_preserve_order(values: list[str], limit: int = 6) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = str(value or "").strip()
+        if not clean:
+            continue
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _token_set(value: str) -> set[str]:
+    return set(re.findall(r"[a-zA-Z0-9_]+", (value or "").lower()))
+
+
+def _map_suggestions_to_citations(
+    suggestions: list[str],
+    citations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not suggestions:
+        return []
+    if not citations:
+        return [
+            {
+                "suggestion": suggestion,
+                "citation_ids": [],
+                "reason": "No retrieval citations available for this suggestion.",
+                "support_level": "none",
+            }
+            for suggestion in suggestions
+        ]
+
+    mapped: list[dict[str, Any]] = []
+    for suggestion in suggestions:
+        suggestion_tokens = _token_set(suggestion)
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for citation in citations:
+            claim_tokens = _token_set(str(citation.get("claim", "")))
+            if not claim_tokens:
+                continue
+            overlap = len(suggestion_tokens & claim_tokens)
+            overlap_ratio = overlap / max(1, len(suggestion_tokens)) if suggestion_tokens else 0.0
+            citation_score = float(citation.get("score") or 0.0)
+            combined = (0.65 * overlap_ratio) + (0.35 * citation_score)
+            scored.append((combined, citation))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        picked = [item for item in scored[:2] if item[0] >= 0.12]
+        citation_ids = [str(item[1].get("id") or "").strip() for item in picked if str(item[1].get("id") or "").strip()]
+        if citation_ids:
+            mapped.append(
+                {
+                    "suggestion": suggestion,
+                    "citation_ids": citation_ids,
+                    "reason": "Suggestion grounded by overlapping evidence claims.",
+                    "support_level": "high" if len(citation_ids) >= 2 else "medium",
+                }
+            )
+        else:
+            fallback = citations[0]
+            fallback_id = str(fallback.get("id") or "").strip()
+            mapped.append(
+                {
+                    "suggestion": suggestion,
+                    "citation_ids": [fallback_id] if fallback_id else [],
+                    "reason": "Weak lexical overlap; attached best available citation as advisory support.",
+                    "support_level": "low",
+                }
+            )
+    return mapped
+
+
+def _apply_memory_coaching_adjustments(
+    *,
+    answer_text: str,
+    feedback: str,
+    strengths: list[str],
+    weaknesses: list[str],
+    suggestions: list[str],
+    recommended_next_steps: list[str],
+    config: dict[str, Any],
+) -> tuple[str, list[str], list[str], list[str], list[str]]:
+    memory_profile = config.get("memory_profile") if isinstance(config.get("memory_profile"), dict) else {}
+    coaching_policy = config.get("coaching_policy") if isinstance(config.get("coaching_policy"), dict) else {}
+    if not memory_profile and not coaching_policy:
+        return feedback, strengths, weaknesses, suggestions, recommended_next_steps
+
+    targets = [str(item) for item in (memory_profile.get("priority_targets") or []) if str(item).strip()]
+    needs_metrics = memory_profile.get("metric_signal") == "needs_metrics"
+    needs_star = memory_profile.get("star_signal") == "needs_star_structure"
+    has_metric = any(ch.isdigit() for ch in answer_text)
+    has_star_markers = bool(re.search(r"\b(situation|task|action|result|first|then|finally)\b", answer_text.lower()))
+
+    if needs_metrics and not has_metric:
+        weaknesses.append("Your recent pattern shows low measurable impact evidence; this answer also lacks a concrete metric.")
+        suggestions.append("Add one metric-based result (e.g., latency -30%, conversion +12%, delivery time -20%).")
+        recommended_next_steps.append("Rewrite this answer with one quantifiable outcome and compare score changes.")
+    if needs_star and not has_star_markers:
+        weaknesses.append("Your coaching memory indicates STAR structure is often missing, and this answer is still loosely structured.")
+        suggestions.append("Use explicit STAR flow: Situation, Task, Action, Result in 4 short blocks.")
+        recommended_next_steps.append("Practice one behavioral answer using STAR and save it to Story Vault.")
+    if "technical_depth" in targets:
+        suggestions.append("Increase technical depth by naming constraints, alternatives, and validation steps.")
+    if "tradeoffs" in targets:
+        suggestions.append("Include one tradeoff decision and explain why you rejected the main alternative.")
+
+    topic_gaps = [str(item) for item in (memory_profile.get("topic_gaps") or []) if str(item).strip()]
+    topic_strengths = [str(item) for item in (memory_profile.get("topic_strengths") or []) if str(item).strip()]
+    if "backend" in topic_strengths and "system_design" in topic_gaps:
+        recommended_next_steps.append("Use your backend strength to answer one system-design question with scaling and reliability tradeoffs.")
+
+    adaptive_note_parts: list[str] = []
+    if targets:
+        adaptive_note_parts.append(f"Personal focus: {', '.join(targets[:3])}.")
+    if needs_metrics:
+        adaptive_note_parts.append("Prioritize measurable outcomes.")
+    if needs_star:
+        adaptive_note_parts.append("Use STAR structure for clarity.")
+    if adaptive_note_parts:
+        feedback = f"{feedback} {' '.join(adaptive_note_parts)}".strip()
+
+    policy_rules = [str(item) for item in (coaching_policy.get("feedback_rules") or []) if str(item).strip()]
+    if policy_rules:
+        recommended_next_steps.extend(policy_rules[:1])
+
+    return (
+        feedback,
+        _dedupe_preserve_order(strengths, limit=5),
+        _dedupe_preserve_order(weaknesses, limit=5),
+        _dedupe_preserve_order(suggestions, limit=6),
+        _dedupe_preserve_order(recommended_next_steps, limit=6),
+    )
+
+
 def score_reliability(scores: list[int]) -> dict[str, Any]:
     if not scores:
         return {"runs": 0, "scores": [], "mean_score": 0, "min_score": 0, "max_score": 0, "std_dev": 0.0, "consistency_percent": 0, "consistency_label": "unknown"}
@@ -184,6 +323,7 @@ def evaluate_answer(
     retrieval_evidence: list[dict[str, Any]] = []
     rag_summary = "RAG disabled for this evaluation."
     retrieval_quality = _empty_retrieval_quality()
+    rag_query_trace: dict[str, Any] = {}
     if use_rag:
         rag_result = retrieve_for_evaluation(
             profession=profession,
@@ -195,6 +335,7 @@ def evaluate_answer(
         retrieval_evidence = rag_result.evidence
         rag_summary = rag_result.summary
         retrieval_quality = rag_result.quality
+        rag_query_trace = rag_result.query_trace
     user_prompt = {
         "profession": profession,
         "difficulty": config.get("difficulty"),
@@ -213,9 +354,12 @@ def evaluate_answer(
         "retrieved_context": context,
         "retrieval_quality": retrieval_quality,
         "rag_summary": rag_summary,
+        "memory_profile": config.get("memory_profile", {}),
+        "coaching_policy": config.get("coaching_policy", {}),
         "instructions": (
             "Use retrieved_context only if helpful and relevant. "
             "When retrieval_quality is low, rely more on the answer and rubric than on weak sources. "
+            "Use memory_profile and coaching_policy to personalize feedback, next steps, and likely next-question direction. "
             "Be strict, specific, and evidence-based. Avoid generic repeated language."
         ),
     }
@@ -258,6 +402,16 @@ def evaluate_answer(
         f"{citation['id']}: {citation['doc_type']} evidence from {citation['source']} supports this feedback signal."
         for citation in citations[:3]
     ]
+    feedback, strengths, weaknesses, suggestions, recommended_next_steps = _apply_memory_coaching_adjustments(
+        answer_text=answer_text,
+        feedback=feedback,
+        strengths=strengths,
+        weaknesses=weaknesses,
+        suggestions=suggestions,
+        recommended_next_steps=recommended_next_steps,
+        config=config,
+    )
+    suggestion_citations = _map_suggestions_to_citations(suggestions, citations)
     return {
         "score": score,
         "sub_scores": sub_scores,
@@ -267,6 +421,7 @@ def evaluate_answer(
         "strengths": strengths,
         "weaknesses": weaknesses,
         "suggestions": suggestions,
+        "suggestion_citations": suggestion_citations,
         "recommended_next_steps": recommended_next_steps,
         "feedback": feedback,
         "next_question": next_q,
@@ -277,6 +432,7 @@ def evaluate_answer(
         "citations": citations,
         "citation_notes": citation_notes,
         "rag_evaluation": rag_evaluation,
+        "rag_query_trace": rag_query_trace,
         "red_flags": red_flags,
         "confidence_score": confidence_score,
         "score_explanation": _build_score_explanation(score, sub_scores, red_flags),

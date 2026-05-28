@@ -1,6 +1,7 @@
 "use client";
 
 import { Moon, Sun } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 type Theme = "light" | "dark";
@@ -17,6 +18,7 @@ function getInitialTheme(): Theme {
 }
 
 export function ThemeToggle() {
+  const pathname = usePathname();
   const [theme, setTheme] = useState<Theme>("light");
   const [mounted, setMounted] = useState(false);
 
@@ -30,6 +32,10 @@ export function ThemeToggle() {
 
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  if (pathname.startsWith("/interview/presence")) {
+    return null;
+  }
 
   const toggleTheme = () => {
     const nextTheme = theme === "dark" ? "light" : "dark";

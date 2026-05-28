@@ -33,7 +33,13 @@ type InterviewAnswerPanelProps = {
   onClear: () => void;
   onPassQuestion: () => void;
   onAskHint?: () => void;
-  hint?: { hint: string; bullets: string[] } | null;
+  hint?: {
+    hint: string;
+    bullets: string[];
+    ragSummary?: string;
+    retrievalQuality?: { label?: string; score?: number };
+    evidence?: Array<{ source?: string; preview?: string; relevance_label?: string; hybrid_score?: number }>;
+  } | null;
   hintLoading?: boolean;
 };
 
@@ -137,6 +143,24 @@ export function InterviewAnswerPanel({
                 <li key={index}>• {item}</li>
               ))}
             </ul>
+          )}
+          {(hint.ragSummary || hint.evidence?.length) && (
+            <div className="mt-3 rounded-xl border border-cyan-300/20 bg-black/10 p-3 text-xs text-cyan-100">
+              <div className="font-semibold">
+                RAG evidence {hint.retrievalQuality?.label ? `· ${hint.retrievalQuality.label}` : ""}
+                {typeof hint.retrievalQuality?.score === "number" ? ` (${hint.retrievalQuality.score}/100)` : ""}
+              </div>
+              {hint.ragSummary && <p className="mt-1 text-cyan-100/80">{hint.ragSummary}</p>}
+              {!!hint.evidence?.length && (
+                <ul className="mt-2 space-y-1 text-cyan-100/75">
+                  {hint.evidence.slice(0, 2).map((item, index) => (
+                    <li key={`${item.source || "source"}-${index}`}>
+                      {item.source || "knowledge base"}: {item.preview}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       )}

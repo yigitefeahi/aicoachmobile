@@ -76,3 +76,44 @@ def test_logout_clears_cookie():
     r = client.post("/auth/logout")
     assert r.status_code == 200
     assert r.json().get("ok") is True
+
+
+def test_rag_eval_session_and_trend_endpoints():
+    reg = client.post(
+        "/auth/register",
+        json={
+            "name": "RAG Eval Test",
+            "email": f"rageval_{uuid4().hex[:8]}@example.com",
+            "password": "secret123",
+            "profession": "Frontend Developer",
+        },
+    )
+    assert reg.status_code == 200
+    auth = reg.json()
+    headers = {
+        "Authorization": f"Bearer {auth['access_token']}",
+        "X-CSRF-Token": auth["csrf_token"],
+    }
+
+    seed = client.post("/demo/seed", headers=headers)
+    assert seed.status_code == 200
+
+    sessions = client.get("/interview/sessions", headers=headers)
+    assert sessions.status_code == 200
+    session_id = sessions.json()["sessions"][0]["session_id"]
+
+    session_eval = client.get(f"/rag/eval/session/{session_id}", headers=headers)
+    assert session_eval.status_code == 200
+    payload = session_eval.json()
+    assert "retrieval_precision" in payload
+    assert "coverage" in payload
+    assert "faithfulness" in payload
+    assert "citation_support_rate" in payload
+    assert "low_confidence" in payload
+    assert "rag_vs_no_rag" in payload
+
+    trend = client.get("/rag/eval/trend?sample_size=10", headers=headers)
+    assert trend.status_code == 200
+    trend_payload = trend.json()
+    assert "status" in trend_payload
+    assert "timeline" in trend_payload

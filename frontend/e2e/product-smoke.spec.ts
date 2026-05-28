@@ -87,7 +87,7 @@ test("dashboard renders as product hub on desktop and mobile", async ({ page }) 
   await page.goto("/dashboard");
   await expect(page.getByRole("heading", { name: /interview coaching hub/i })).toBeVisible();
   await expect(page.getByText(/progress analytics/i)).toBeVisible();
-  await expect(page.getByText(/question freshness/i)).toBeVisible();
+  await expect(page.getByText("Question Freshness", { exact: true })).toBeVisible();
 });
 
 test("settings exposes privacy, defaults, and usage guards", async ({ page }) => {
@@ -95,5 +95,5 @@ test("settings exposes privacy, defaults, and usage guards", async ({ page }) =>
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: /profile, privacy, and defaults/i })).toBeVisible();
   await expect(page.getByText(/cost & usage guards/i)).toBeVisible();
-  await expect(page.getByDisplayValue("Google")).toBeVisible();
+  await expect(page.locator('input[value="Google"]')).toBeVisible();
 });

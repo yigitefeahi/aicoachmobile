@@ -5,6 +5,12 @@ import re
 import chromadb
 from chromadb.utils import embedding_functions
 from .config import settings
+from .knowledge_graph import (
+    graph_context_for_query as _kg_graph_context_for_query,
+    graph_expansion_targets,
+    user_graph_edges,
+    get_all_graph_edges,
+)
 
 
 DEFAULT_COLLECTION = "knowledge_base"
@@ -54,22 +60,8 @@ PURPOSE_LAYERS: dict[str, list[str]] = {
     "roadmap": ["roadmap_kb", "answer_kb", "evaluation_kb", "role_kb", "company_kb", "user_memory_kb"],
     "story_search": ["answer_kb", "evaluation_kb", "role_kb"],
 }
-GRAPH_EDGES: list[dict[str, str]] = [
-    {"source": "backend_developer", "relation": "requires", "target": "api_design"},
-    {"source": "backend_developer", "relation": "requires", "target": "data_modeling"},
-    {"source": "backend_developer", "relation": "requires", "target": "reliability"},
-    {"source": "software_engineer", "relation": "requires", "target": "testing"},
-    {"source": "frontend_developer", "relation": "requires", "target": "accessibility"},
-    {"source": "devops_engineer", "relation": "requires", "target": "observability"},
-    {"source": "api_design", "relation": "evaluated_by", "target": "technical_depth"},
-    {"source": "metrics", "relation": "evaluated_by", "target": "impact"},
-    {"source": "star", "relation": "improves", "target": "structure"},
-    {"source": "google", "relation": "values", "target": "structured_problem_solving"},
-    {"source": "meta", "relation": "values", "target": "impact"},
-    {"source": "amazon", "relation": "values", "target": "ownership"},
-    {"source": "stripe", "relation": "values", "target": "precision"},
-    {"source": "apple", "relation": "values", "target": "craft"},
-]
+# Backward-compatible alias for tests and imports.
+GRAPH_EDGES: list[dict[str, str]] = [dict(edge) for edge in get_all_graph_edges()]
 
 
 @dataclass
@@ -96,6 +88,7 @@ class RetrievalResult:
     evidence: list[dict[str, Any]]
     summary: str
     quality: dict[str, Any]
+    query_trace: dict[str, Any] = field(default_factory=dict)
 
 
 def get_chroma_client() -> chromadb.PersistentClient:
@@ -380,29 +373,186 @@ def _format_context(evidence: Iterable[dict[str, Any]]) -> str:
     return "\n\n---\n\n".join(chunks)
 
 
+def _build_selection_reason(item: dict[str, Any]) -> str:
+    reasons: list[str] = []
+    if item.get("expanded_from_graph"):
+        graph_path = item.get("graph_path") or {}
+        source = str(graph_path.get("source") or "graph").replace("_", " ")
+        target = str(graph_path.get("target") or "node").replace("_", " ")
+        reasons.append(f"Graph 1-hop expansion from {source} to {target}")
+    elif item.get("graph_edge"):
+        reasons.append("Matched knowledge graph edge")
+    doc_type = str(item.get("doc_type") or "")
+    if doc_type == "user_memory":
+        reasons.append("Personal user memory signal")
+    elif doc_type == "user_graph_edge":
+        reasons.append("User coaching graph edge")
+    elif doc_type == "cv_signal":
+        reasons.append("CV fact signal")
+    elif doc_type == "graph_edge":
+        reasons.append("Static interview knowledge graph relation")
+    if float(item.get("keyword_score", 0) or 0) >= 0.35:
+        reasons.append("Strong keyword overlap")
+    if float(item.get("semantic_score", 0) or 0) >= 0.65:
+        reasons.append("Strong semantic match")
+    if float(item.get("metadata_score", 0) or 0) >= 0.1:
+        reasons.append("Metadata filter match")
+    matched_filter = item.get("matched_filter") or {}
+    if matched_filter:
+        filter_bits = [f"{key}={value}" for key, value in matched_filter.items() if value]
+        if filter_bits:
+            reasons.append(f"Filter: {', '.join(filter_bits)}")
+    if not reasons:
+        reasons.append("Hybrid retrieval rank")
+    return "; ".join(reasons)
+
+
+def _annotate_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    annotated: list[dict[str, Any]] = []
+    for item in items:
+        enriched = dict(item)
+        enriched["selection_reason"] = _build_selection_reason(enriched)
+        annotated.append(enriched)
+    return annotated
+
+
+def _build_query_trace(payload: RetrievalQuery, query_variants: list[str], routes: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    filters = [item for item in _candidate_filters(payload) if item]
+    return {
+        "purpose": payload.purpose,
+        "primary_query": payload.query,
+        "query_variants": query_variants,
+        "routes": [{"collection": route["collection"], "layer": route["layer"], "weight": route.get("weight", 0)} for route in routes],
+        "candidate_filters": filters,
+        "profession": payload.profession,
+        "company": payload.company,
+        "focus_area": payload.focus_area,
+        "difficulty": payload.difficulty,
+        "sector": payload.sector,
+        "doc_types": payload.doc_types or PURPOSE_DOC_TYPES.get(payload.purpose, []),
+        "k": payload.k,
+        "top_k_scores": [
+            {
+                "source": item.get("source"),
+                "layer": item.get("layer"),
+                "doc_type": item.get("doc_type"),
+                "hybrid_score": item.get("hybrid_score"),
+                "semantic_score": item.get("semantic_score"),
+                "keyword_score": item.get("keyword_score"),
+                "metadata_score": item.get("metadata_score"),
+                "layer_weight": item.get("layer_weight"),
+                "selection_reason": item.get("selection_reason"),
+                "relevance_label": item.get("relevance_label"),
+            }
+            for item in evidence
+        ],
+    }
+
+
 def graph_context_for_query(payload: RetrievalQuery) -> list[dict[str, Any]]:
-    tokens = _tokenize(
-        " ".join(
-            [
-                payload.query,
-                payload.profession,
-                payload.company,
-                payload.focus_area,
-                payload.difficulty,
-                " ".join(payload.cv_facts),
-                " ".join(str(item.get("memory_type", "")) + " " + str(item.get("content", "")) for item in payload.user_memory),
-            ]
+    return _kg_graph_context_for_query(payload)
+
+
+def _user_graph_evidence(user_edges: list[dict[str, str]], query_tokens: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for idx, edge in enumerate(user_edges[:6]):
+        content = f"User graph relation: {edge['source']} {edge['relation']} {edge['target']}."
+        keyword_score = _keyword_overlap_score(query_tokens, content)
+        hybrid_score = min(1.0, 0.5 + (0.12 * keyword_score))
+        items.append(
+            {
+                "source": f"user_graph:{idx + 1}",
+                "collection": "graph_kb",
+                "layer": "graph_kb",
+                "doc_type": "user_graph_edge",
+                "profession": _profession_slug(edge.get("source", "")),
+                "semantic_score": 0.52,
+                "keyword_score": round(keyword_score, 4),
+                "metadata_score": 0.1,
+                "hybrid_score": round(hybrid_score, 4),
+                "content": content,
+                "preview": content,
+                "keyword_hits": len(query_tokens & _tokenize(content)),
+                "graph_edge": edge,
+                "relevance_label": _relevance_label(hybrid_score),
+            }
         )
-    )
-    hits: list[dict[str, Any]] = []
-    for edge in GRAPH_EDGES:
-        edge_text = " ".join(edge.values())
-        edge_tokens = _tokenize(edge_text) | _tokenize(edge_text.replace("_", " "))
-        overlap = len(tokens & edge_tokens)
-        if overlap:
-            hits.append({**edge, "overlap": overlap})
-    hits.sort(key=lambda item: item["overlap"], reverse=True)
-    return hits[:8]
+    return items
+
+
+def _graph_hop_vector_candidates(
+    payload: RetrievalQuery,
+    graph_hits: list[dict[str, Any]],
+    routes: list[dict[str, Any]],
+    query_tokens: set[str],
+    existing_keys: set[tuple[str, str, str]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for edge in graph_expansion_targets(graph_hits, limit=3):
+        target_label = str(edge.get("target") or "").replace("_", " ")
+        hop_query = f"{payload.profession} {target_label} interview rubric question framework"
+        hop_tokens = query_tokens | _tokenize(target_label)
+        for route in routes[:4]:
+            if route["layer"] in {"user_memory_kb", "graph_kb"}:
+                continue
+            try:
+                collection = get_collection(route["collection"])
+            except Exception:
+                continue
+            try:
+                results = _query_collection(collection, hop_query, max(6, payload.k * 2))
+            except Exception:
+                continue
+            docs: list[str] = results.get("documents", [[]])[0] or []
+            metas: list[dict[str, Any]] = results.get("metadatas", [[]])[0] or []
+            distances: list[float] = results.get("distances", [[]])[0] or []
+            for idx, doc in enumerate(docs[:2]):
+                meta = metas[idx] if idx < len(metas) and isinstance(metas[idx], dict) else {}
+                source = str(meta.get("source", "unknown"))
+                key = (route["collection"], source, doc[:160])
+                if key in existing_keys:
+                    continue
+                distance = float(distances[idx]) if idx < len(distances) else 1.0
+                semantic_score = max(0.0, min(1.0, 1.0 - distance))
+                keyword_score = _keyword_overlap_score(hop_tokens, doc)
+                metadata_score = _metadata_match_score(payload, meta)
+                layer = layer_for_metadata(meta)
+                layer_weight = max(float(route.get("weight", 0.0)), LAYER_WEIGHTS.get(layer, 0.0))
+                hybrid_score = (
+                    (0.52 * semantic_score)
+                    + (0.27 * keyword_score)
+                    + metadata_score
+                    + layer_weight
+                    + 0.06
+                )
+                items.append(
+                    {
+                        "source": source,
+                        "collection": route["collection"],
+                        "collection_route_layer": route["layer"],
+                        "doc_type": str(meta.get("doc_type", "knowledge")),
+                        "layer": layer,
+                        "profession": str(meta.get("profession", "")).lower().strip(),
+                        "sector": str(meta.get("sector", "")).lower().strip(),
+                        "company": str(meta.get("company", "")).lower().strip(),
+                        "focus_area": str(meta.get("focus_area", "")).lower().strip(),
+                        "difficulty": str(meta.get("difficulty", "")).lower().strip(),
+                        "chunk_index": meta.get("chunk_index"),
+                        "semantic_score": round(semantic_score, 4),
+                        "keyword_score": round(keyword_score, 4),
+                        "metadata_score": round(metadata_score, 4),
+                        "layer_weight": round(layer_weight, 4),
+                        "hybrid_score": round(max(0.0, hybrid_score), 4),
+                        "content": doc,
+                        "preview": _clean_text(doc)[:260],
+                        "keyword_hits": len(hop_tokens & _tokenize(doc)),
+                        "matched_filter": {},
+                        "expanded_from_graph": True,
+                        "graph_path": edge,
+                    }
+                )
+                existing_keys.add(key)
+    return items
 
 
 def _memory_evidence(payload: RetrievalQuery, query_tokens: set[str]) -> list[dict[str, Any]]:
@@ -586,18 +736,33 @@ def retrieve(payload: RetrievalQuery) -> RetrievalResult:
                     if current is None or candidate["hybrid_score"] > current["hybrid_score"]:
                         candidate_map[key] = candidate
 
+    graph_hits = graph_context_for_query(payload)
+    hop_candidates = _graph_hop_vector_candidates(
+        payload,
+        graph_hits,
+        routes,
+        query_tokens,
+        set(candidate_map.keys()),
+    )
+    for candidate in hop_candidates:
+        key = (candidate["collection"], candidate["source"], candidate["content"][:160])
+        current = candidate_map.get(key)
+        if current is None or candidate["hybrid_score"] > current["hybrid_score"]:
+            candidate_map[key] = candidate
+
     if not successful_collections and not (payload.user_memory or payload.cv_facts):
         return RetrievalResult(
             context="",
             evidence=[],
             summary=f"No routed vector collections were available for {payload.purpose}; fallback coaching logic was used.",
             quality=_quality_summary([]),
+            query_trace=_build_query_trace(payload, query_variants, routes, []),
         )
 
     ranked = sorted(candidate_map.values(), key=lambda x: x["hybrid_score"], reverse=True)
     ranked.extend(_memory_evidence(payload, query_tokens))
     ranked.extend(_cv_evidence(payload, query_tokens))
-    graph_hits = graph_context_for_query(payload)
+    ranked.extend(_user_graph_evidence(user_graph_edges(payload.user_memory, payload.cv_facts), query_tokens))
     for idx, edge in enumerate(graph_hits):
         content = f"Graph relation: {edge['source']} {edge['relation']} {edge['target']}."
         ranked.append(
@@ -638,9 +803,17 @@ def retrieve(payload: RetrievalQuery) -> RetrievalResult:
             break
     top.sort(key=lambda x: x["hybrid_score"], reverse=True)
     top = top[: payload.k]
+    top = _annotate_evidence(top)
     quality = _quality_summary(top)
     summary = _build_summary(payload, quality, top)
-    return RetrievalResult(context=_format_context(top), evidence=top, summary=summary, quality=quality)
+    query_trace = _build_query_trace(payload, query_variants, routes, top)
+    return RetrievalResult(
+        context=_format_context(top),
+        evidence=top,
+        summary=summary,
+        quality=quality,
+        query_trace=query_trace,
+    )
 
 
 def retrieve_for_evaluation(profession: str, question: str, answer_text: str, config: Optional[dict[str, Any]] = None) -> RetrievalResult:

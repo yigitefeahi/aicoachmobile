@@ -40,6 +40,7 @@ from .schemas import (
     SessionListResponse,
     EvaluationReliabilityRequest,
     RagComparisonRequest,
+    RagInspectorRerunRequest,
     UserMeResponse,
     HintRequest,
     HintResponse,
@@ -64,6 +65,8 @@ from .interview import (
     evaluate_reliability_for_session,
     compare_rag_modes_for_session,
     load_user_memory,
+    summarize_user_memory,
+    build_coaching_policy,
 )
 from .rate_limit import RateLimitConfig, enforce_with_backend
 from .audit import audit_event
@@ -75,6 +78,7 @@ from .cv_struct import extract_cv_sections
 from .cv_embedding import fuse_keyword_and_embedding, profession_embedding_scores
 from .reporting import build_session_report, build_regression_snapshot
 from .rag import retrieve_for_cv_screening, rank_story_candidates, evaluate_retrieval, graph_context_for_query, RetrievalQuery
+from .rag_inspector import build_inspector_payload, rerun_session_retrieval
 from .role_profiles import get_role_profile
 from .product_features import (
     build_hint,
@@ -93,11 +97,12 @@ default_origins = [
     "http://127.0.0.1:3001",
 ]
 allow_origins = settings.cors_origin_list or default_origins
+_render_origin = r"^https://[a-z0-9-]+\.onrender\.com$"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1):\d+",
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1):\d+|https://[a-z0-9-]+\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -106,6 +111,8 @@ app.add_middleware(
 
 def _origin_allowed(origin: str) -> bool:
     if origin in allow_origins:
+        return True
+    if re.match(_render_origin, origin):
         return True
     return bool(re.match(r"^https?://(localhost|127\.0\.0\.1):\d+$", origin))
 
@@ -186,13 +193,14 @@ def _client_key(request: Request, user_id: Optional[int] = None, prefix: str = "
 
 
 def _attach_auth_cookie(response: JSONResponse, token: str) -> JSONResponse:
+    secure = settings.auth_cookie_secure
     response.set_cookie(
         key="access_token",
         value=token,
         httponly=True,
         max_age=settings.jwt_expires_minutes * 60,
-        samesite="lax",
-        secure=settings.auth_cookie_secure,
+        samesite="none" if secure else "lax",
+        secure=secure,
         path="/",
     )
     return response
@@ -267,6 +275,62 @@ def _build_cv_role_feedback(
         "primary_role": suggested_professions[0] if suggested_professions else None,
         "secondary_roles": suggested_professions[1:],
         "role_feedback": feedback,
+    }
+
+
+def _citation_support_rate(
+    citations: list[dict[str, Any]],
+    feedback_text: str,
+) -> tuple[float, dict[str, Any]]:
+    if not citations:
+        return 0.0, {"supported": 0, "total": 0}
+    feedback_tokens = set(re.findall(r"[a-zA-Z0-9_]+", (feedback_text or "").lower()))
+    supported = 0
+    for citation in citations:
+        claim_tokens = set(re.findall(r"[a-zA-Z0-9_]+", str(citation.get("claim", "")).lower()))
+        overlap = len(feedback_tokens & claim_tokens)
+        if overlap >= 2:
+            supported += 1
+    total = len(citations)
+    return round(supported / max(1, total), 4), {"supported": supported, "total": total}
+
+
+def _rag_eval_payload_for_session(session: InterviewSession) -> dict[str, Any]:
+    result_json = session.result_json or {}
+    final_summary = result_json.get("final_summary") or {}
+    turns = result_json.get("turns") or []
+    latest = turns[-1] if turns else {}
+    answer_text = str(latest.get("answer") or "")
+    feedback_text = str(final_summary.get("feedback") or latest.get("feedback") or "")
+    evidence = final_summary.get("retrieval_evidence") or []
+    retrieval_eval = evaluate_retrieval(evidence, answer_text=answer_text, feedback_text=feedback_text)
+    quality = retrieval_eval.get("quality") or {}
+    precision = float(retrieval_eval.get("retrieval_precision_proxy") or 0.0)
+    coverage = float(retrieval_eval.get("coverage") or 0.0)
+    faithfulness = float(retrieval_eval.get("faithfulness_proxy") or 0.0)
+    grounding = float(retrieval_eval.get("answer_grounding_proxy") or 0.0)
+    citations = final_summary.get("citations") or []
+    citation_support_rate, citation_support_meta = _citation_support_rate(citations, feedback_text=feedback_text)
+    low_confidence = bool(retrieval_eval.get("low_confidence", False))
+    rag_vs_no_rag = {
+        "status": "not_run",
+        "detail": "Run /interview/evaluate/rag-compare for live delta.",
+        "score_delta": None,
+        "confidence_delta": None,
+    }
+    return {
+        "session_id": session.id,
+        "profession": session.profession,
+        "retrieval_precision": round(precision, 4),
+        "coverage": round(coverage, 4),
+        "faithfulness": round(faithfulness, 4),
+        "answer_grounding": round(grounding, 4),
+        "citation_support_rate": citation_support_rate,
+        "citation_support": citation_support_meta,
+        "retrieval_quality": quality,
+        "low_confidence": low_confidence,
+        "rag_vs_no_rag": rag_vs_no_rag,
+        "evidence_count": len(evidence),
     }
 
 
@@ -1095,11 +1159,13 @@ def interview_start(
     }
 
     session, first_q, question_context = create_session(db, user, chosen, config=config)
+    question_rationale = str((session.result_json or {}).get("question_rationale") or "")
 
     return {
         "session_id": session.id,
         "first_question": first_q,
         "question_context": question_context,
+        "question_rationale": question_rationale or None,
         "config": config,
     }
 
@@ -1167,6 +1233,8 @@ def interview_hint(
         config["profession"] = session.profession
         memories = load_user_memory(db, user)
         config["user_memory"] = memories
+        config["memory_profile"] = summarize_user_memory(memories)
+        config["coaching_policy"] = build_coaching_policy(config["memory_profile"])
         config["cv_facts"] = [item["content"] for item in memories if item.get("memory_type") == "cv_signal"][:8]
         return build_hint(question, config)
     except HTTPException:
@@ -1180,6 +1248,7 @@ def interview_roadmap(
     interview_date: Optional[str] = None,
     target_company: Optional[str] = None,
     focus_area: Optional[str] = None,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     memories = load_user_memory(db, user)
@@ -1198,6 +1267,7 @@ def interview_weekly_drills(
     interview_date: Optional[str] = None,
     target_company: Optional[str] = None,
     focus_area: Optional[str] = None,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     memories = load_user_memory(db, user)
@@ -1462,49 +1532,138 @@ def rag_memory(
 @app.get("/rag/inspector/session/{session_id}")
 def rag_inspector_session(
     session_id: int,
+    turn_index: Optional[int] = None,
+    phase: str = "answer_evaluation",
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     session = db.get(InterviewSession, session_id)
     if not session or session.user_id != user.id:
         raise HTTPException(status_code=404, detail="Not found")
-    result_json = session.result_json or {}
-    final_summary = result_json.get("final_summary") or {}
-    evidence = final_summary.get("retrieval_evidence") or []
-    turns = result_json.get("turns") or []
-    latest = turns[-1] if turns else {}
-    feedback_text = str(final_summary.get("feedback") or latest.get("feedback") or "")
-    answer_text = str(latest.get("answer") or "")
-    config = result_json.get("config") or {}
-    graph_hits = graph_context_for_query(
-        RetrievalQuery(
-            purpose="inspector",
-            profession=session.profession,
-            query=" ".join([str(latest.get("question") or ""), answer_text, feedback_text]),
-            company=str(config.get("target_company") or config.get("company_pack") or ""),
-            focus_area=str(config.get("focus_area") or ""),
-            difficulty=str(config.get("difficulty") or ""),
-            user_memory=load_user_memory(db, user),
+    safe_phase = phase if phase in {"answer_evaluation", "question_generation"} else "answer_evaluation"
+    return build_inspector_payload(session, user, db, turn_index=turn_index, phase=safe_phase)
+
+
+@app.post("/rag/inspector/session/{session_id}/rerun")
+def rag_inspector_rerun(
+    session_id: int,
+    payload: RagInspectorRerunRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    session = db.get(InterviewSession, session_id)
+    if not session or session.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        return rerun_session_retrieval(
+            session,
+            user,
+            db,
+            turn_index=payload.turn_index,
+            phase=payload.phase,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/rag/eval/session/{session_id}")
+def rag_eval_session(
+    session_id: int,
+    include_compare: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    session = db.get(InterviewSession, session_id)
+    if not session or session.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    payload = _rag_eval_payload_for_session(session)
+    if include_compare:
+        turns = (session.result_json or {}).get("turns") or []
+        latest_answer = str((turns[-1] or {}).get("answer") or "").strip() if turns else ""
+        if latest_answer:
+            try:
+                compare = compare_rag_modes_for_session(
+                    db=db,
+                    user=user,
+                    session_id=session.id,
+                    answer_text=latest_answer,
+                )
+                payload["rag_vs_no_rag"] = {
+                    "status": "ok",
+                    "score_delta": compare.get("score_delta"),
+                    "confidence_delta": compare.get("confidence_delta"),
+                    "preferred_mode": compare.get("preferred_mode"),
+                }
+            except Exception as e:
+                payload["rag_vs_no_rag"] = {
+                    "status": "error",
+                    "detail": str(e),
+                    "score_delta": None,
+                    "confidence_delta": None,
+                }
+        else:
+            payload["rag_vs_no_rag"] = {
+                "status": "missing_answer",
+                "detail": "No answer text found for compare.",
+                "score_delta": None,
+                "confidence_delta": None,
+            }
+    return payload
+
+
+@app.get("/rag/eval/trend")
+def rag_eval_trend(
+    sample_size: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    safe_size = max(5, min(60, int(sample_size)))
+    sessions = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.user_id == user.id)
+        .order_by(InterviewSession.id.desc())
+        .limit(safe_size)
+        .all()
     )
+    rows = []
+    for session in sessions:
+        result_json = session.result_json or {}
+        if result_json.get("status") != "completed":
+            continue
+        row = _rag_eval_payload_for_session(session)
+        rows.append(
+            {
+                "session_id": session.id,
+                "created_at": str(session.created_at),
+                "retrieval_precision": row["retrieval_precision"],
+                "coverage": row["coverage"],
+                "faithfulness": row["faithfulness"],
+                "citation_support_rate": row["citation_support_rate"],
+                "low_confidence": row["low_confidence"],
+            }
+        )
+    if not rows:
+        return {
+            "status": "insufficient_data",
+            "sample_size": 0,
+            "averages": {},
+            "low_confidence_rate": None,
+            "timeline": [],
+        }
+    count = len(rows)
+    avg = lambda key: round(sum(float(item.get(key) or 0) for item in rows) / max(1, count), 4)
+    low_conf = sum(1 for item in rows if item.get("low_confidence"))
     return {
-        "session_id": session.id,
-        "profession": session.profession,
-        "query_debug": {
-            "purpose": "session_report",
-            "focus_area": config.get("focus_area"),
-            "difficulty": config.get("difficulty"),
-            "company": config.get("target_company") or config.get("company_pack"),
-            "latest_question": latest.get("question"),
+        "status": "ok",
+        "sample_size": count,
+        "averages": {
+            "retrieval_precision": avg("retrieval_precision"),
+            "coverage": avg("coverage"),
+            "faithfulness": avg("faithfulness"),
+            "citation_support_rate": avg("citation_support_rate"),
         },
-        "retrieval_quality": final_summary.get("retrieval_quality") or {},
-        "rag_summary": final_summary.get("rag_summary") or result_json.get("question_rag", {}).get("summary"),
-        "retrieval_evaluation": evaluate_retrieval(evidence, answer_text=answer_text, feedback_text=feedback_text),
-        "evidence": evidence,
-        "question_rag": result_json.get("question_rag") or {},
-        "graph_hits": graph_hits,
-        "user_memory": load_user_memory(db, user),
-        "low_confidence_warning": bool((final_summary.get("retrieval_quality") or {}).get("label") in {"none", "low"}),
+        "low_confidence_rate": round(low_conf / max(1, count), 4),
+        "timeline": list(reversed(rows[:12])),
     }
 
 

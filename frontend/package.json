@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node ./scripts/sync-talkinghead-public.mjs",
+    "prebuild": "node ./scripts/sync-talkinghead-public.mjs",
     "dev": "node ./node_modules/next/dist/bin/next dev",
     "build": "node ./node_modules/next/dist/bin/next build",
     "start": "node ./node_modules/next/dist/bin/next start",
@@ -10,6 +12,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@met4citizen/talkinghead": "^1.7.0",
     "axios": "^1.13.6",
     "clsx": "^2.1.1",
     "framer-motion": "^12.36.0",
@@ -19,6 +22,7 @@
     "react-dom": "19.2.3",
     "react-hook-form": "^7.71.2",
     "recharts": "^2.15.4",
+    "three": "^0.184.0",
     "zustand": "^5.0.11"
   },
   "devDependencies": {
@@ -27,6 +31,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/three": "^0.184.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",

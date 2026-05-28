@@ -90,6 +90,7 @@ class StartSessionResponse(BaseModel):
     session_id: int
     first_question: str
     question_context: Optional[str] = None
+    question_rationale: Optional[str] = None
     config: Dict[str, Any]
 
 
@@ -120,6 +121,7 @@ class SubmitAnswerResponse(BaseModel):
     strengths: Optional[List[str]] = None
     weaknesses: Optional[List[str]] = None
     suggestions: Optional[List[str]] = None
+    suggestion_citations: Optional[List[Dict[str, Any]]] = None
     recommended_next_steps: Optional[List[str]] = None
     retrieval_evidence: Optional[List[Dict[str, Any]]] = None
     transcript: Optional[str] = None
@@ -138,6 +140,7 @@ class SubmitAnswerResponse(BaseModel):
     company_rubric: Optional[Dict[str, Any]] = None
     rag_summary: Optional[str] = None
     retrieval_quality: Optional[Dict[str, Any]] = None
+    question_rationale: Optional[str] = None
 
 
 class HintRequest(BaseModel):
@@ -241,6 +244,11 @@ class EvaluationReliabilityRequest(BaseModel):
 class RagComparisonRequest(BaseModel):
     session_id: int
     answer_text: str
+
+
+class RagInspectorRerunRequest(BaseModel):
+    turn_index: Optional[int] = None
+    phase: Literal["answer_evaluation", "question_generation"] = "answer_evaluation"
 
 
 class SessionResultResponse(BaseModel):

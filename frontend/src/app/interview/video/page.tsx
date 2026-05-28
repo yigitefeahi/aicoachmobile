@@ -25,6 +25,7 @@ type VideoResponse = {
   next_question: string | null;
   pending_next_question?: string | null;
   question_context?: string | null;
+  question_rationale?: string | null;
   feedback: string;
   score: number;
   done: boolean;
@@ -83,6 +84,7 @@ function VideoInterviewPageContent() {
   const question =
     searchParams.get("question") ||
     "Tell me about yourself and why you're interested in this role.";
+  const questionRationale = searchParams.get("questionRationale") || "";
   const focusArea = searchParams.get("focusArea") || "Mixed";
 
   const liveVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -104,6 +106,7 @@ function VideoInterviewPageContent() {
   const [speakingMetrics, setSpeakingMetrics] = useState<Record<string, string | number>>({});
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [pendingNextQuestion, setPendingNextQuestion] = useState<string | null>(null);
+  const [pendingQuestionRationale, setPendingQuestionRationale] = useState("");
   const [canRetry, setCanRetry] = useState(false);
   const [attemptsLeft, setAttemptsLeft] = useState(0);
   const [confidenceScore, setConfidenceScore] = useState<number | null>(null);
@@ -300,6 +303,11 @@ function VideoInterviewPageContent() {
       setVisualFeedback(data.video_analysis?.visual_feedback || {});
       setSpeakingMetrics(data.video_analysis?.speaking_metrics || {});
       setPendingNextQuestion(data.pending_next_question || data.next_question || null);
+      const qr =
+        typeof data.question_rationale === "string" ? data.question_rationale.trim() : "";
+      if (qr) {
+        setPendingQuestionRationale(qr);
+      }
       setCanRetry(Boolean(data.can_retry));
       setAttemptsLeft(Number(data.attempts_left || 0));
       setConfidenceScore(typeof data.confidence_score === "number" ? data.confidence_score : null);
@@ -357,6 +365,11 @@ function VideoInterviewPageContent() {
         if (ctxUrl) {
           query.set("questionContext", ctxUrl);
         }
+        const qr =
+          typeof data.question_rationale === "string" ? data.question_rationale.trim() : "";
+        if (qr) {
+          query.set("questionRationale", qr);
+        }
         router.push(`/interview/video?${query.toString()}`);
       }
       setAnalysisSuccess(false);
@@ -408,6 +421,7 @@ function VideoInterviewPageContent() {
         <InterviewQuestionHero
           questionText={question}
           contextLabel={sessionLineForHero}
+          questionRationale={questionRationale || pendingQuestionRationale}
         />
 
         {passNotice && (
@@ -683,6 +697,9 @@ function VideoInterviewPageContent() {
                         onClick={() => {
                           const query = new URLSearchParams(searchParams.toString());
                           query.set("question", pendingNextQuestion);
+                          if (pendingQuestionRationale) {
+                            query.set("questionRationale", pendingQuestionRationale);
+                          }
                           router.push(`/interview/video?${query.toString()}`);
                         }}
                       >

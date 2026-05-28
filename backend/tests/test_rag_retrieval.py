@@ -70,9 +70,12 @@ def test_retrieve_for_hint_returns_quality_and_evidence(monkeypatch):
     assert result.quality["label"] in {"low", "medium", "high"}
     assert result.quality["layer_count"] >= 1
     assert result.quality["collection_count"] >= 1
+    assert result.query_trace.get("primary_query")
+    assert result.evidence[0].get("selection_reason")
     assert result.evidence[0]["layer"]
     assert result.evidence[0]["collection"]
-    assert result.evidence[0]["doc_type"] in {"framework", "rubric", "role"}
+    doc_types = {item["doc_type"] for item in result.evidence}
+    assert doc_types & {"framework", "rubric", "role", "graph_edge"}
     assert "RAG support" in result.summary
     assert "answer_kb" in requested_collections
     assert "knowledge_base" in requested_collections
@@ -114,14 +117,34 @@ def test_user_memory_and_graph_are_retrieval_sources(monkeypatch):
                     "memory_type": "skill_gap",
                     "content": "User should add measurable metrics and validation details.",
                     "score": 0.8,
+                    "meta": {"dimensions": ["metrics"]},
                 }
             ],
+            k=8,
         )
     )
 
     layers = {item["layer"] for item in result.evidence}
-    assert "user_memory_kb" in layers
+    assert "user_memory_kb" in layers or any(item.get("doc_type") == "user_graph_edge" for item in result.evidence)
     assert any(item.get("doc_type") == "graph_edge" for item in result.evidence)
+
+
+def test_graph_hop_expansion_adds_candidates(monkeypatch):
+    monkeypatch.setattr(rag, "get_collection", lambda name="knowledge_base": FakeCollection())
+
+    result = rag.retrieve(
+        rag.RetrievalQuery(
+            purpose="question_generation",
+            profession="Backend Developer",
+            query="Ask about API design reliability metrics",
+            company="meta",
+            k=4,
+        )
+    )
+
+    assert any(item.get("expanded_from_graph") for item in result.evidence) or any(
+        item.get("doc_type") == "graph_edge" for item in result.evidence
+    )
 
 
 def test_retrieval_evaluation_and_citations_are_explainable():

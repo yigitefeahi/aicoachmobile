@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { apiFetch, setCsrfToken } from "@/lib/api";
+import { apiFetch, setAccessToken, setCsrfToken } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
@@ -23,7 +23,8 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
 
-      const data = (await res.json()) as { csrf_token?: string };
+      const data = (await res.json()) as { access_token?: string; csrf_token?: string };
+      if (data.access_token) setAccessToken(data.access_token);
       if (data.csrf_token) setCsrfToken(data.csrf_token);
       router.push("/dashboard");
     } catch (e: unknown) {

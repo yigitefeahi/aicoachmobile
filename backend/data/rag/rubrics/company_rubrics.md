@@ -14,3 +14,5 @@ Stripe-style loops reward precision, user empathy, long-term thinking, operation
 Amazon-style loops reward ownership, customer obsession, bias for action, measurable results, and operational rigor. Good answers show personal responsibility, hard decisions, and outcomes backed by numbers.
 
 Apple-style loops reward craft, simplicity, quality, privacy, and cross-functional influence. Good answers show attention to detail, strong taste, and careful product judgment.
+
+Turkish large employers often expect sector-specific signals in addition to global best practices. Defense and aerospace employers (Aselsan, TUSAŞ, Havelsan) value engineering rigor, safety, verification, and documentation. Telecom employers (Turkcell, Türk Telekom) value reliability, scale, transformation, and customer impact. E-commerce and delivery employers (Trendyol, Hepsiburada, Getir) value peak-traffic performance, execution speed, and measurable business outcomes.

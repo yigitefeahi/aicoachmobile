@@ -41,7 +41,7 @@ const modes = [
     value: "presence",
     label: "Presence",
     description:
-      "Simulated face-to-face room: the interviewer asks aloud, you answer, then live feedback.",
+      "3D interviewer room: lip-synced questions, voice answers auto-submit when you pause.",
     icon: UserRound,
   },
   {
@@ -77,6 +77,7 @@ function InterviewSetupPageContent() {
   const searchParams = useSearchParams();
 
   const [professions, setProfessions] = useState<string[]>([]);
+  const [professionSearch, setProfessionSearch] = useState("");
   const [sectors, setSectors] = useState<string[]>([]);
   const [profession, setProfession] = useState("");
   const [sector, setSector] = useState("");
@@ -97,6 +98,16 @@ function InterviewSetupPageContent() {
   const [cvLimitations, setCvLimitations] = useState("");
   const [suggestedProfessions, setSuggestedProfessions] = useState<string[]>([]);
   const [suggestedSectors, setSuggestedSectors] = useState<string[]>([]);
+  const [cvRoleBreakdown, setCvRoleBreakdown] = useState<{
+    primary_role?: string;
+    secondary_roles?: string[];
+    role_feedback?: Array<{ role?: string; stance?: string; score?: number; evidence?: string[]; comment?: string }>;
+  } | null>(null);
+  const [cvRag, setCvRag] = useState<{
+    summary?: string;
+    quality?: { label?: string; score?: number };
+    evidence?: Array<{ source?: string; preview?: string; relevance_label?: string }>;
+  } | null>(null);
   const [cvEvaluator, setCvEvaluator] = useState<{
     headline?: string;
     fit?: string;
@@ -114,7 +125,7 @@ function InterviewSetupPageContent() {
         if (!res.ok) throw new Error("Could not load professions");
 
         const data = await res.json();
-        const list = data.professions || [];
+        const list = [...(data.professions || [])].sort((a: string, b: string) => a.localeCompare(b));
         setProfessions(list);
         setProfession(list[0] || "");
         const secRes = await fetch(`${API_BASE}/sectors`);
@@ -152,6 +163,11 @@ function InterviewSetupPageContent() {
     () => modes.find((m) => m.value === mode) || modes[0],
     [mode]
   );
+  const filteredProfessions = useMemo(() => {
+    const needle = professionSearch.trim().toLowerCase();
+    if (!needle) return professions;
+    return professions.filter((item) => item.toLowerCase().includes(needle));
+  }, [professionSearch, professions]);
 
   const handleStart = async () => {
     if (!profession) return;
@@ -207,6 +223,11 @@ function InterviewSetupPageContent() {
       if (qc) {
         query.set("questionContext", qc);
       }
+      const qr =
+        typeof data.question_rationale === "string" ? data.question_rationale.trim() : "";
+      if (qr) {
+        query.set("questionRationale", qr);
+      }
 
       router.push(`${targetPath}?${query.toString()}`);
     } catch (e: unknown) {
@@ -231,6 +252,20 @@ function InterviewSetupPageContent() {
       setSuggestedSectors(secs);
       setCvRationale(data.rationale || "");
       setCvLimitations(data.limitations || "");
+      setCvRoleBreakdown(
+        data.role_fit_breakdown && typeof data.role_fit_breakdown === "object"
+          ? (data.role_fit_breakdown as {
+              primary_role?: string;
+              secondary_roles?: string[];
+              role_feedback?: Array<{ role?: string; stance?: string; score?: number; evidence?: string[]; comment?: string }>;
+            })
+          : null
+      );
+      setCvRag({
+        summary: data.rag_summary || "",
+        quality: data.retrieval_quality,
+        evidence: Array.isArray(data.retrieval_evidence) ? data.retrieval_evidence : [],
+      });
       setCvEvaluator(
         data.evaluator && typeof data.evaluator === "object"
           ? (data.evaluator as {
@@ -279,43 +314,69 @@ function InterviewSetupPageContent() {
                     Profession
                   </span>
                 </label>
+                <div className="mb-3 flex gap-2">
+                  <input
+                    value={professionSearch}
+                    onChange={(e) => setProfessionSearch(e.target.value)}
+                    className="input"
+                    placeholder="Search profession, e.g. Data Engineer"
+                    disabled={loadingProfessions}
+                  />
+                  {professionSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setProfessionSearch("")}
+                      className="btn-secondary shrink-0"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
                 <select
                   value={profession}
                   onChange={(e) => setProfession(e.target.value)}
                   className="select"
                   disabled={loadingProfessions}
                 >
-                  {professions.map((item) => (
+                  {filteredProfessions.length === 0 && (
+                    <option value={profession} className="text-black">
+                      No matches. Current: {profession || "None"}
+                    </option>
+                  )}
+                  {filteredProfessions.map((item) => (
                     <option key={item} value={item} className="text-black">
                       {item}
                     </option>
                   ))}
                 </select>
+                <p className="mt-2 text-xs text-slate-400">
+                  {filteredProfessions.length} of {professions.length} roles shown alphabetically.
+                </p>
               </div>
 
               <div className="card-soft p-4">
                 <div className="mb-2 font-medium">CV import & screening</div>
-                <p className="mb-3 text-sm text-slate-300">
+                <p className="mb-3 text-sm text-[var(--muted)]">
                   Upload your CV for role/sector suggestions and a short AI screening vs your profile role.
                 </p>
                 <input type="file" accept=".txt,.md,.pdf,.doc,.docx" onChange={handleCVUpload} />
-                {suggestionLoading && <p className="mt-2 text-sm text-slate-300">Analyzing CV...</p>}
+                {suggestionLoading && <p className="mt-2 text-sm text-[var(--muted)]">Analyzing CV...</p>}
                 {cvEvaluator && (
-                  <div className="mt-4 space-y-3 rounded-2xl border border-cyan-400/25 bg-cyan-500/10 p-4 text-left">
+                  <div className="mt-4 space-y-3 rounded-2xl border border-[var(--card-border)] bg-[var(--card)] p-4 text-left shadow-sm">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-semibold uppercase tracking-wide text-cyan-200/90">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-[var(--accent)]">
                         CV evaluator
                       </span>
                       {cvEvaluator.fit && (
                         <span
                           className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                             cvEvaluator.fit === "strong"
-                              ? "bg-emerald-500/20 text-emerald-200"
+                              ? "border border-[var(--card-border)] bg-[var(--card-soft)] text-[var(--foreground)]"
                               : cvEvaluator.fit === "moderate"
-                                ? "bg-amber-500/20 text-amber-100"
+                                ? "border border-[var(--card-border)] bg-[var(--card-soft)] text-[var(--foreground)]"
                                 : cvEvaluator.fit === "weak"
-                                  ? "bg-rose-500/20 text-rose-100"
-                                  : "bg-white/10 text-slate-300"
+                                  ? "border border-[var(--card-border)] bg-[var(--card-soft)] text-[var(--foreground)]"
+                                  : "border border-[var(--card-border)] bg-[var(--card-soft)] text-[var(--foreground)]"
                           }`}
                         >
                           Fit: {cvEvaluator.fit}
@@ -323,15 +384,15 @@ function InterviewSetupPageContent() {
                       )}
                     </div>
                     {cvEvaluator.headline && (
-                      <p className="text-sm font-medium text-slate-100">{cvEvaluator.headline}</p>
+                      <p className="text-sm font-medium text-[var(--foreground)]">{cvEvaluator.headline}</p>
                     )}
                     {cvEvaluator.for_role_note && (
-                      <p className="text-sm leading-relaxed text-slate-300">{cvEvaluator.for_role_note}</p>
+                      <p className="text-sm leading-relaxed text-[var(--muted)]">{cvEvaluator.for_role_note}</p>
                     )}
                     {!!cvEvaluator.strengths?.length && (
                       <div>
-                        <div className="text-xs font-semibold uppercase text-emerald-300/90">Strengths</div>
-                        <ul className="mt-1 list-inside list-disc text-sm text-slate-300">
+                        <div className="text-xs font-semibold uppercase text-[var(--accent)]">Strengths</div>
+                        <ul className="mt-1 list-inside list-disc text-sm text-[var(--muted)]">
                           {cvEvaluator.strengths.map((s, i) => (
                             <li key={i}>{s}</li>
                           ))}
@@ -340,8 +401,8 @@ function InterviewSetupPageContent() {
                     )}
                     {!!cvEvaluator.weaknesses?.length && (
                       <div>
-                        <div className="text-xs font-semibold uppercase text-amber-300/90">Gaps / risks</div>
-                        <ul className="mt-1 list-inside list-disc text-sm text-slate-300">
+                        <div className="text-xs font-semibold uppercase text-[var(--accent)]">Gaps / risks</div>
+                        <ul className="mt-1 list-inside list-disc text-sm text-[var(--muted)]">
                           {cvEvaluator.weaknesses.map((s, i) => (
                             <li key={i}>{s}</li>
                           ))}
@@ -349,21 +410,82 @@ function InterviewSetupPageContent() {
                       </div>
                     )}
                     {cvEvaluator.disclaimer && (
-                      <p className="text-xs text-slate-500">{cvEvaluator.disclaimer}</p>
+                      <p className="text-xs text-[var(--muted)]">{cvEvaluator.disclaimer}</p>
                     )}
                   </div>
                 )}
-                {!!cvRationale && <p className="mt-3 text-sm text-slate-300">{cvRationale}</p>}
+                {!!cvRationale && <p className="mt-3 text-sm text-[var(--muted)]">{cvRationale}</p>}
                 {!!cvLimitations && (
-                  <p className="mt-2 text-xs text-slate-500">{cvLimitations}</p>
+                  <p className="mt-2 text-xs text-[var(--muted)]">{cvLimitations}</p>
                 )}
+                {cvRag?.summary && (
+                  <div className="mt-3 overflow-hidden rounded-2xl border border-[var(--card-border)] bg-[var(--card)] text-xs text-[var(--foreground)] shadow-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--card-border)] bg-[var(--card-soft)] px-3 py-2">
+                      <span className="font-semibold uppercase tracking-wide text-[var(--accent)]">
+                        RAG CV evidence
+                      </span>
+                      {(cvRag.quality?.label || typeof cvRag.quality?.score === "number") && (
+                        <span className="rounded-full border border-[var(--card-border)] bg-[var(--card)] px-2 py-0.5 font-medium text-[var(--foreground)]">
+                          {cvRag.quality?.label || "quality"}
+                          {typeof cvRag.quality?.score === "number" ? ` · ${cvRag.quality.score}/100` : ""}
+                        </span>
+                      )}
+                    </div>
+                    <div className="p-3">
+                    <p className="leading-relaxed text-[var(--muted)]">{cvRag.summary}</p>
+                    {!!cvRag.evidence?.length && (
+                      <ul className="mt-3 space-y-2 text-[var(--muted)]">
+                        {cvRag.evidence.slice(0, 2).map((item, index) => (
+                          <li
+                            key={`${item.source || "kb"}-${index}`}
+                            className="rounded-xl border border-[var(--card-border)] bg-[var(--card-soft)] px-3 py-2"
+                          >
+                            <span className="font-medium text-[var(--foreground)]">
+                              {item.source || "knowledge base"}
+                            </span>
+                            <span className="text-[var(--muted)]">: </span>
+                            <span>{item.preview}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    </div>
+                  </div>
+                )}
+                {cvRoleBreakdown?.role_feedback?.length ? (
+                  <div className="cv-role-fit-panel">
+                    <div className="cv-role-fit-title">Role fit breakdown</div>
+                    <p className="cv-role-fit-meta">
+                      Primary: {cvRoleBreakdown.primary_role || "n/a"}
+                      {!!cvRoleBreakdown.secondary_roles?.length && ` · Also relevant: ${cvRoleBreakdown.secondary_roles.join(", ")}`}
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {cvRoleBreakdown.role_feedback.slice(0, 4).map((item, index) => (
+                        <div key={`${item.role || "role"}-${index}`} className="cv-role-fit-card">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="cv-role-fit-name">{item.role}</span>
+                            <span className="cv-role-fit-pill">
+                              {item.stance?.replaceAll("_", " ")} · {item.score ?? 0}
+                            </span>
+                          </div>
+                          <p className="cv-role-fit-copy">{item.comment}</p>
+                          {!!item.evidence?.length && (
+                            <p className="cv-role-fit-evidence">
+                              Evidence: {item.evidence.slice(0, 5).join(", ")}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 {suggestedProfessions.length > 0 && (
-                  <p className="mt-2 text-sm text-cyan-300">
+                  <p className="cv-suggestion-line mt-2">
                     Suggested roles: {suggestedProfessions.join(", ")}
                   </p>
                 )}
                 {suggestedSectors.length > 0 && (
-                  <p className="mt-1 text-sm text-cyan-300">
+                  <p className="cv-suggestion-line mt-1">
                     Suggested sectors: {suggestedSectors.join(", ")}
                   </p>
                 )}
@@ -498,7 +620,7 @@ function InterviewSetupPageContent() {
                   value={targetCompany}
                   onChange={(e) => setTargetCompany(e.target.value)}
                   className="input"
-                  placeholder="e.g. Turk Telekom, Vodafone, Türkcell, etc."
+                    placeholder="e.g. Turkcell, Trendyol, Aselsan, Türk Telekom"
                 />
               </div>
 

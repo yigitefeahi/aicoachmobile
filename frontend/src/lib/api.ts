@@ -5,9 +5,39 @@ export const API_BASE =
     : "http://localhost:8000");
 
 const CSRF_STORAGE_KEY = "aicoach_csrf";
+const ACCESS_TOKEN_STORAGE_KEY = "aicoach_access_token";
 
 /** Stateless CSRF token from login/register (HMAC-signed on the server). */
 let csrfToken: string | null = null;
+let accessToken: string | null = null;
+
+function readStoredAccessToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return sessionStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function effectiveAccessToken(): string | null {
+  return accessToken || readStoredAccessToken();
+}
+
+export function setAccessToken(token: string | null) {
+  accessToken = token;
+  if (typeof window === "undefined") return;
+  try {
+    if (token) sessionStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, token);
+    else sessionStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+  } catch {
+    /* private mode / quota */
+  }
+}
+
+export function getAccessToken(): string | null {
+  return effectiveAccessToken();
+}
 
 function readStoredCsrf(): string | null {
   if (typeof window === "undefined") return null;
@@ -39,9 +69,11 @@ export function getCsrfToken(): string | null {
 
 export async function clearToken() {
   csrfToken = null;
+  accessToken = null;
   if (typeof window !== "undefined") {
     try {
       sessionStorage.removeItem(CSRF_STORAGE_KEY);
+      sessionStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
     } catch {
       /* */
     }
@@ -60,6 +92,8 @@ export async function clearToken() {
 /** Headers for raw fetch() calls (e.g. TTS) that do not use apiFetch. */
 export function buildAuthHeaders(): Record<string, string> {
   const h: Record<string, string> = {};
+  const tok = effectiveAccessToken();
+  if (tok) h["Authorization"] = `Bearer ${tok}`;
   const t = effectiveCsrf();
   if (t) h["X-CSRF-Token"] = t;
   return h;
@@ -71,6 +105,11 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
   const t = effectiveCsrf();
   if (t) {
     headers.set("X-CSRF-Token", t);
+  }
+
+  const tok = effectiveAccessToken();
+  if (tok) {
+    headers.set("Authorization", `Bearer ${tok}`);
   }
 
   let res: Response;

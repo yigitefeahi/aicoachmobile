@@ -23,6 +23,7 @@ type SubmitResponse = {
   next_question: string | null;
   pending_next_question?: string | null;
   question_context?: string | null;
+  question_rationale?: string | null;
   feedback: string;
   score: number;
   done: boolean;
@@ -41,6 +42,8 @@ type SubmitResponse = {
   weaknesses?: string[];
   suggestions?: string[];
   score_explanation?: string;
+  rag_summary?: string;
+  retrieval_quality?: { label?: string; score?: number };
 };
 
 type SpeechResultEventLike = {
@@ -78,8 +81,10 @@ function LiveInterviewPageContent() {
   const initialQuestion =
     searchParams.get("question") ||
     "Tell me about yourself and why you're interested in this role.";
+  const initialQuestionRationale = searchParams.get("questionRationale") || "";
 
   const [currentQuestion, setCurrentQuestion] = useState(initialQuestion);
+  const [questionRationale, setQuestionRationale] = useState(initialQuestionRationale);
   const [answer, setAnswer] = useState("");
   const [feedback, setFeedback] = useState(
     "Your answer will be evaluated here with strengths, weaknesses and suggestions."
@@ -102,7 +107,13 @@ function LiveInterviewPageContent() {
   const [scorecard, setScorecard] = useState<Record<string, number>>({});
   const [toneSignals, setToneSignals] = useState<Record<string, unknown>>({});
   const [companyRubric, setCompanyRubric] = useState<{ label?: string; rubric_focus?: string[] } | null>(null);
-  const [hint, setHint] = useState<{ hint: string; bullets: string[] } | null>(null);
+  const [hint, setHint] = useState<{
+    hint: string;
+    bullets: string[];
+    ragSummary?: string;
+    retrievalQuality?: { label?: string; score?: number };
+    evidence?: Array<{ source?: string; preview?: string; relevance_label?: string; hybrid_score?: number }>;
+  } | null>(null);
   const [hintLoading, setHintLoading] = useState(false);
 
   const [audioReady, setAudioReady] = useState(false);
@@ -229,6 +240,12 @@ function LiveInterviewPageContent() {
     setToneSignals(data.tone_signals || {});
     setCompanyRubric(data.company_rubric || null);
 
+    const qr =
+      typeof data.question_rationale === "string" ? data.question_rationale.trim() : "";
+    if (qr) {
+      setQuestionRationale(qr);
+    }
+
     if (!instantMode) {
       await speakFeedback(data.feedback as unknown);
     }
@@ -255,6 +272,12 @@ function LiveInterviewPageContent() {
       setHint({
         hint: safeText(data.hint, "Start with a clear structure and one measurable result."),
         bullets: Array.isArray(data.bullets) ? data.bullets.map((x: unknown) => safeText(x)) : [],
+        ragSummary: safeText(data.rag_summary),
+        retrievalQuality:
+          data.retrieval_quality && typeof data.retrieval_quality === "object"
+            ? (data.retrieval_quality as { label?: string; score?: number })
+            : undefined,
+        evidence: Array.isArray(data.retrieval_evidence) ? data.retrieval_evidence : [],
       });
     } catch {
       setHint({ hint: "Use STAR: context, action, result, and one metric.", bullets: [] });
@@ -282,6 +305,11 @@ function LiveInterviewPageContent() {
       }
       if (data.next_question) {
         setCurrentQuestion(safeText(data.next_question));
+      }
+      const qr =
+        typeof data.question_rationale === "string" ? data.question_rationale.trim() : "";
+      if (qr) {
+        setQuestionRationale(qr);
       }
       setPendingNextQuestion(null);
       setCanRetry(false);
@@ -508,6 +536,7 @@ function LiveInterviewPageContent() {
         <InterviewQuestionHero
           questionText={safeText(currentQuestion)}
           contextLabel={sessionLineForHero}
+          questionRationale={questionRationale}
         />
 
         <div className="page-grid">

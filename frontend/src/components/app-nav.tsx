@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { BarChart3, BookOpen, CalendarDays, Settings, Sparkles } from "lucide-react";
 
 const hiddenRoutes = new Set(["/", "/login", "/register", "/onboarding"]);
+const hiddenPrefixes = ["/interview/presence"];
 
 const links = [
   { href: "/dashboard", label: "Dashboard", icon: BarChart3 },
@@ -16,7 +17,12 @@ const links = [
 
 export function AppNav() {
   const pathname = usePathname();
-  if (hiddenRoutes.has(pathname)) return null;
+  if (
+    hiddenRoutes.has(pathname) ||
+    hiddenPrefixes.some((prefix) => pathname.startsWith(prefix))
+  ) {
+    return null;
+  }
 
   return (
     <>

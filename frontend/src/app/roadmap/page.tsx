@@ -9,6 +9,7 @@ type RoadmapDay = {
   title: string;
   detail: string;
   focus: string;
+  evidence_note?: string | null;
 };
 
 type Roadmap = {
@@ -17,6 +18,8 @@ type Roadmap = {
   interview_date: string;
   days_left: number;
   schedule: RoadmapDay[];
+  rag_summary?: string;
+  retrieval_quality?: { label?: string; score?: number };
 };
 
 type WeeklyDrill = {
@@ -28,6 +31,7 @@ type WeeklyDrill = {
   focus: string;
   actions: string[];
   success_criteria: string;
+  evidence_note?: string | null;
 };
 
 type WeeklyDrills = {
@@ -36,6 +40,8 @@ type WeeklyDrills = {
   interview_date: string;
   weeks: number;
   drills: WeeklyDrill[];
+  rag_summary?: string;
+  retrieval_quality?: { label?: string; score?: number };
 };
 
 export default function RoadmapPage() {
@@ -169,6 +175,15 @@ export default function RoadmapPage() {
               <div className="mt-1 font-semibold">{roadmap.interview_date}</div>
               <div className="mt-5 text-sm text-slate-300">Plan Length</div>
               <div className="mt-1 font-semibold">{roadmap.days_left} days</div>
+              {roadmap.rag_summary && (
+                <div className="mt-5 rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-3 text-xs text-cyan-100">
+                  <div className="font-semibold">
+                    RAG plan quality {roadmap.retrieval_quality?.label ? `· ${roadmap.retrieval_quality.label}` : ""}
+                    {typeof roadmap.retrieval_quality?.score === "number" ? ` (${roadmap.retrieval_quality.score}/100)` : ""}
+                  </div>
+                  <p className="mt-1 text-cyan-100/80">{roadmap.rag_summary}</p>
+                </div>
+              )}
               <a href="/dashboard" className="btn-secondary mt-6">
                 Back to Dashboard
               </a>
@@ -188,6 +203,11 @@ export default function RoadmapPage() {
                     <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-cyan-300">
                       Focus: {day.focus}
                     </p>
+                    {day.evidence_note && (
+                      <p className="mt-2 rounded-xl border border-cyan-400/20 bg-cyan-500/10 p-2 text-xs text-cyan-100">
+                        Evidence: {day.evidence_note}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -242,6 +262,11 @@ export default function RoadmapPage() {
                   <div className="mt-4 rounded-2xl border border-cyan-400/30 bg-cyan-500/10 p-3 text-sm text-cyan-100">
                     <span className="font-medium">Done when:</span> {drill.success_criteria}
                   </div>
+                  {drill.evidence_note && (
+                    <div className="mt-3 rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-3 text-xs text-cyan-100">
+                      <span className="font-semibold">RAG evidence:</span> {drill.evidence_note}
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => toggleDrill(drill)}
