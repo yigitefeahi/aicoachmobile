@@ -14,9 +14,11 @@ import {
 import { apiFetch } from "@/lib/api";
 import { safeText } from "@/lib/safe-text";
 import { buildSessionContextLine } from "@/lib/question-display";
+import { useInterviewSessionHydration } from "@/lib/interview-session-hydration";
 import { createSpeechEndDetector } from "@/lib/speech-end-detector";
 import { usePresenceWebcam } from "@/lib/use-presence-webcam";
 import { PresenceCallControls } from "@/components/presence/presence-call-controls";
+import { PresenceAnswerConfirm } from "@/components/presence/presence-answer-confirm";
 import { PresenceReviewDrawer } from "@/components/presence/presence-review-drawer";
 import { PresenceSelfView } from "@/components/presence/presence-self-view";
 import type { TalkingHeadAvatarHandle } from "@/components/presence/talking-head-avatar";
@@ -65,6 +67,8 @@ type ConversationPhase =
 
 const MODE = "presence";
 const INTERVIEWER_NAME = "Alex";
+/** Pause this long (no new speech) before asking to submit */
+const PRESENCE_SILENCE_MS = 5000;
 
 function formatCallDuration(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
@@ -72,7 +76,10 @@ function formatCallDuration(totalSeconds: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function phaseLabel(phase: ConversationPhase): string {
+function phaseLabel(phase: ConversationPhase, answerConfirmOpen: boolean): string {
+  if (answerConfirmOpen && phase === "listening") {
+    return "Confirm — submit your answer or keep speaking";
+  }
   switch (phase) {
     case "idle":
       return "Waiting to join";
@@ -93,24 +100,49 @@ function PresenceInterviewPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  const sessionId = searchParams.get("session_id") || "";
+
+  const urlFallback = useMemo(
+    () => ({
+      profession: searchParams.get("profession") || undefined,
+      difficulty: searchParams.get("difficulty") || undefined,
+      mode: "presence" as const,
+      length: searchParams.get("length") || undefined,
+      focusArea: searchParams.get("focusArea") || undefined,
+      sector: searchParams.get("sector") || undefined,
+      company: searchParams.get("company") || undefined,
+      companyPack: searchParams.get("companyPack") || undefined,
+      instantMode: searchParams.get("instantMode") === "true",
+      interviewDate: searchParams.get("interviewDate") || undefined,
+      question: searchParams.get("question") || undefined,
+      questionRationale: searchParams.get("questionRationale") || undefined,
+      questionContext: searchParams.get("questionContext") || undefined,
+    }),
+    [searchParams]
+  );
+
+  const { session, hydrating, hydrationError } = useInterviewSessionHydration(
+    sessionId,
+    urlFallback
+  );
+
+  const profession = session.profession;
+  const difficulty = session.difficulty;
+  const length = session.length;
+  const focusArea = session.focusArea;
+  const sector = session.sector;
+  const targetCompany = session.targetCompany;
+
   const [sessionQuestionContext, setSessionQuestionContext] = useState(
     () => searchParams.get("questionContext") || ""
   );
 
-  const sessionId = searchParams.get("session_id") || "";
-  const profession = searchParams.get("profession") || "Frontend Developer";
-  const difficulty = searchParams.get("difficulty") || "Junior";
-  const length = searchParams.get("length") || "10 Questions";
-  const focusArea = searchParams.get("focusArea") || "Mixed";
-  const sector = searchParams.get("sector") || "";
-  const targetCompany = searchParams.get("company") || "";
-  const initialQuestion =
-    searchParams.get("question") ||
-    "Tell me about yourself and why you're interested in this role.";
-  const initialQuestionRationale = searchParams.get("questionRationale") || "";
-
-  const [currentQuestion, setCurrentQuestion] = useState(initialQuestion);
-  const [questionRationale, setQuestionRationale] = useState(initialQuestionRationale);
+  const [currentQuestion, setCurrentQuestion] = useState(
+    () => searchParams.get("question") || session.currentQuestion
+  );
+  const [questionRationale, setQuestionRationale] = useState(
+    () => searchParams.get("questionRationale") || ""
+  );
   const [liveTranscript, setLiveTranscript] = useState("");
   const [manualAnswer, setManualAnswer] = useState("");
   const [showManualInput, setShowManualInput] = useState(false);
@@ -142,12 +174,20 @@ function PresenceInterviewPageContent() {
   const [callSeconds, setCallSeconds] = useState(0);
   const [joinedToast, setJoinedToast] = useState(false);
   const [hasEvaluation, setHasEvaluation] = useState(false);
+  const [answerConfirmOpen, setAnswerConfirmOpen] = useState(false);
+  const [pendingAnswerText, setPendingAnswerText] = useState("");
 
   const avatarRef = useRef<TalkingHeadAvatarHandle | null>(null);
   const detectorRef = useRef<ReturnType<typeof createSpeechEndDetector> | null>(null);
   const phaseRef = useRef<ConversationPhase>("idle");
   const processingRef = useRef(false);
   const applyResponseRef = useRef<(data: SubmitResponse) => Promise<void>>(async () => {});
+  const submitVoiceAnswerRef = useRef<(text: string) => Promise<void>>(async () => {});
+  const resumeMetaRef = useRef({
+    isResuming: false,
+    questionIndex: 1,
+    totalQuestions: 10,
+  });
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -158,6 +198,23 @@ function PresenceInterviewPageContent() {
       router.push("/interview/setup");
     }
   }, [sessionId, router]);
+
+  useEffect(() => {
+    if (hydrating) return;
+    setCurrentQuestion(session.currentQuestion);
+    setQuestionRationale(session.questionRationale);
+    if (session.questionContext) {
+      setSessionQuestionContext(session.questionContext);
+    }
+    setQuestionIndex(session.questionIndex);
+    setTotalQuestions(session.totalQuestions);
+    setPassesLeft(session.passesLeft);
+    resumeMetaRef.current = {
+      isResuming: session.isResuming,
+      questionIndex: session.questionIndex,
+      totalQuestions: session.totalQuestions,
+    };
+  }, [hydrating, session]);
 
   const webcamEnabled = conversationStarted || avatarReady;
   const { videoRef, ready: cameraReady, error: cameraError } = usePresenceWebcam({
@@ -203,55 +260,81 @@ function PresenceInterviewPageContent() {
     await handle.speak(text);
   }, []);
 
+  const submitVoiceAnswer = useCallback(
+    async (text: string) => {
+      if (processingRef.current || phaseRef.current !== "listening") return;
+
+      processingRef.current = true;
+      setAnswerConfirmOpen(false);
+      setPendingAnswerText("");
+      setPhase("processing");
+      stopListening();
+      setLiveTranscript(text);
+      setLoading(true);
+      setAnalysisSuccess(false);
+
+      try {
+        const res = await apiFetch("/interview/answer/text", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: Number(sessionId), answer_text: text }),
+        });
+        const data: SubmitResponse = await res.json();
+        await applyResponseRef.current(data);
+      } catch (error) {
+        console.error("Submit error:", error);
+        setFeedback("An error occurred while submitting your answer.");
+        setMicError("Could not submit your answer. Try again or type manually.");
+        if (avatarRef.current?.isReady()) {
+          await speakInterviewer("Sorry, I couldn't process that. Please try again.");
+          startListeningRef.current();
+        } else {
+          setPhase("idle");
+        }
+      } finally {
+        setLoading(false);
+        processingRef.current = false;
+      }
+    },
+    [sessionId, speakInterviewer, stopListening]
+  );
+
+  submitVoiceAnswerRef.current = submitVoiceAnswer;
+
+  const startListeningRef = useRef<() => void>(() => {});
+
   const startListening = useCallback(() => {
     stopListening();
     setLiveTranscript("");
+    setAnswerConfirmOpen(false);
+    setPendingAnswerText("");
     setMicError(null);
     setPhase("listening");
 
     detectorRef.current = createSpeechEndDetector({
-      silenceMs: 2200,
+      silenceMs: PRESENCE_SILENCE_MS,
       minChars: 8,
+      requireConfirmation: true,
       onTranscript: (text) => setLiveTranscript(text),
+      onSilenceDetected: (text) => {
+        if (processingRef.current || phaseRef.current !== "listening") return;
+        setPendingAnswerText(text);
+        setAnswerConfirmOpen(true);
+      },
+      onSpeechResumed: () => {
+        setAnswerConfirmOpen(false);
+        setPendingAnswerText("");
+      },
       onError: (message) => setMicError(message),
       onSpeechEnd: (text) => {
-        void (async () => {
-          if (processingRef.current || phaseRef.current !== "listening") return;
-          processingRef.current = true;
-          setPhase("processing");
-          stopListening();
-          setLiveTranscript(text);
-          setLoading(true);
-          setAnalysisSuccess(false);
-
-          try {
-            const res = await apiFetch("/interview/answer/text", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ session_id: Number(sessionId), answer_text: text }),
-            });
-            const data: SubmitResponse = await res.json();
-            await applyResponseRef.current(data);
-          } catch (error) {
-            console.error("Submit error:", error);
-            setFeedback("An error occurred while submitting your answer.");
-            setMicError("Could not submit your answer. Try again or type manually.");
-            if (avatarRef.current?.isReady()) {
-              await speakInterviewer("Sorry, I couldn't process that. Please try again.");
-              startListening();
-            } else {
-              setPhase("idle");
-            }
-          } finally {
-            setLoading(false);
-            processingRef.current = false;
-          }
-        })();
+        void submitVoiceAnswerRef.current(text);
       },
     });
 
     detectorRef.current.start();
-  }, [sessionId, speakInterviewer, stopListening]);
+  }, [stopListening]);
+
+  startListeningRef.current = startListening;
 
   const applyResponse = useCallback(
     async (data: SubmitResponse) => {
@@ -339,12 +422,20 @@ function PresenceInterviewPageContent() {
   const runOpeningTurn = useCallback(async () => {
     if (!avatarRef.current?.isReady()) return;
     setPhase("interviewer_speaking");
-    const intro =
-      "Welcome to your mock interview room. I'll ask the questions, and you can answer out loud. When you finish speaking, pause briefly and I'll continue.";
     const question = safeText(currentQuestion).trim();
-    await speakInterviewer(intro);
-    if (question) {
-      await speakInterviewer(`Here is your first question. ${question}`);
+    const { isResuming, questionIndex: qIdx, totalQuestions: qTotal } = resumeMetaRef.current;
+
+    if (isResuming) {
+      await speakInterviewer(
+        `Welcome back. You're on question ${qIdx} of ${qTotal}. Here's the current question. ${question}`
+      );
+    } else {
+      const intro =
+        "Welcome to your mock interview room. I'll ask the questions, and you can answer out loud. When you finish, pause for a few seconds — we'll ask before submitting your answer.";
+      await speakInterviewer(intro);
+      if (question) {
+        await speakInterviewer(`Here is your first question. ${question}`);
+      }
     }
     startListening();
   }, [currentQuestion, speakInterviewer, startListening]);
@@ -393,6 +484,8 @@ function PresenceInterviewPageContent() {
     const text = manualAnswer.trim();
     if (!text) return;
 
+    setAnswerConfirmOpen(false);
+    setPendingAnswerText("");
     processingRef.current = true;
     stopListening();
     setPhase("processing");
@@ -419,6 +512,8 @@ function PresenceInterviewPageContent() {
 
   const handlePassQuestion = async () => {
     try {
+      setAnswerConfirmOpen(false);
+      setPendingAnswerText("");
       processingRef.current = true;
       stopListening();
       setPhase("processing");
@@ -487,11 +582,29 @@ function PresenceInterviewPageContent() {
 
   const handleReplayQuestion = async () => {
     if (!avatarRef.current?.isReady()) return;
+    setAnswerConfirmOpen(false);
+    setPendingAnswerText("");
     stopListening();
     await speakInterviewer(safeText(currentQuestion));
     if (conversationStarted) {
       startListening();
     }
+  };
+
+  const handleConfirmSubmit = () => {
+    if (processingRef.current || phase !== "listening") return;
+    const text =
+      pendingAnswerText.trim() ||
+      detectorRef.current?.getTranscript().trim() ||
+      liveTranscript.trim();
+    if (text.length < 8) return;
+    detectorRef.current?.submitNow();
+  };
+
+  const handleConfirmContinue = () => {
+    setAnswerConfirmOpen(false);
+    setPendingAnswerText("");
+    detectorRef.current?.resumeListening();
   };
 
   const interviewerActive = isSpeaking || phase === "interviewer_speaking";
@@ -509,27 +622,27 @@ function PresenceInterviewPageContent() {
 
   return (
     <main className="presence-room fixed inset-0 flex flex-col bg-[#1a1a1a] text-slate-100">
-      <header className="z-30 flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-[#111111]/95 px-4 py-3 backdrop-blur-md sm:px-6">
+      <header className="presence-header z-30 flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-[#111111]/95 px-4 py-3 backdrop-blur-md sm:px-6">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="inline-flex h-2 w-2 rounded-full bg-emerald-400" aria-hidden />
-            <p className="truncate text-sm font-semibold text-white">
+            <p className="presence-header-title truncate text-sm font-semibold">
               {profession} · Mock Interview
             </p>
           </div>
-          <p className="mt-0.5 truncate text-xs text-slate-400">{sessionLineForHero}</p>
+          <p className="presence-header-subtitle mt-0.5 truncate text-xs">{sessionLineForHero}</p>
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
           {conversationStarted && (
-            <span className="rounded-full bg-white/8 px-2.5 py-1 font-mono text-slate-200">
+            <span className="presence-header-chip presence-header-chip-timer rounded-full px-2.5 py-1 font-mono">
               {formatCallDuration(callSeconds)}
             </span>
           )}
-          <span className="rounded-full bg-white/8 px-2.5 py-1 text-slate-300">
+          <span className="presence-header-chip rounded-full px-2.5 py-1">
             Q {questionIndex ?? "—"}/{totalQuestions ?? "—"}
           </span>
-          <span className="hidden rounded-full bg-white/8 px-2.5 py-1 text-slate-300 sm:inline">
+          <span className="presence-header-chip hidden rounded-full px-2.5 py-1 sm:inline">
             Pass {passesLeft}/3
           </span>
           {hasEvaluation && score != null && (
@@ -541,9 +654,12 @@ function PresenceInterviewPageContent() {
               Feedback · {score}
             </button>
           )}
-          <Link href="/dashboard" className="hidden rounded-full bg-white/8 px-2.5 py-1 text-slate-300 hover:bg-white/12 sm:inline">
-              Dashboard
-            </Link>
+          <Link
+            href="/dashboard"
+            className="presence-header-link hidden rounded-full px-2.5 py-1 sm:inline"
+          >
+            Dashboard
+          </Link>
         </div>
       </header>
 
@@ -560,7 +676,7 @@ function PresenceInterviewPageContent() {
           <TalkingHeadAvatar
             ref={avatarRef}
             variant="tile"
-            className="h-full"
+            className="relative z-0 h-full"
             onReady={() => setAvatarReady(true)}
             onSpeakingChange={setIsSpeaking}
             onError={(message) => setMicError(message)}
@@ -589,11 +705,11 @@ function PresenceInterviewPageContent() {
             listening={phase === "listening"}
           />
 
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/55 to-transparent px-4 pb-4 pt-16 sm:px-6">
-            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/85 via-black/55 to-transparent px-4 pb-4 pt-16 sm:px-6">
+            <p className="presence-caption-label mb-1 text-[11px] font-semibold uppercase tracking-wider">
               {phase === "listening" ? "Live caption" : "Current question"}
             </p>
-            <p className="max-w-[min(100%,720px)] text-sm leading-relaxed text-white sm:text-base">
+            <p className="presence-caption-text max-w-[min(100%,720px)] text-sm leading-relaxed sm:text-base">
               {captionText}
             </p>
           </div>
@@ -604,12 +720,21 @@ function PresenceInterviewPageContent() {
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-300/90">
                   Mock Interview Room
                 </p>
-                <h1 className="mt-2 text-xl font-semibold text-white">Ready to join?</h1>
+                <h1 className="mt-2 text-xl font-semibold text-white">
+                  {session.isResuming ? "Continue your interview?" : "Ready to join?"}
+                </h1>
                 <p className="mt-2 text-sm leading-relaxed text-slate-400">
-                  {avatarReady
-                    ? "Your 3D interviewer is ready. Join to start a face-to-face mock interview — speak naturally and pause when you finish."
-                    : "Setting up your interviewer avatar…"}
+                  {hydrating
+                    ? "Loading your saved session…"
+                    : avatarReady
+                      ? session.isResuming
+                        ? `Resume at question ${questionIndex ?? "—"} of ${totalQuestions ?? "—"}.`
+                        : "Your 3D interviewer is ready. Join to start a face-to-face mock interview — speak naturally and pause when you finish."
+                      : "Setting up your interviewer avatar…"}
                 </p>
+                {hydrationError && (
+                  <p className="mt-2 text-xs text-amber-200/90">{hydrationError}</p>
+                )}
                 {!avatarReady && (
                   <div className="mt-4 flex items-center justify-center gap-2 text-sm text-slate-300">
                     <span className="presence-connecting-dot inline-block h-2 w-2 rounded-full bg-blue-400" />
@@ -638,7 +763,7 @@ function PresenceInterviewPageContent() {
           )}
 
           {phase === "processing" && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[1px]">
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 backdrop-blur-[1px]">
               <div className="rounded-2xl border border-violet-400/25 bg-[#141414]/95 px-6 py-4 text-center">
                 <p className="text-sm font-medium text-violet-100">Evaluating your answer…</p>
                 <p className="mt-1 text-xs text-slate-400">Coach feedback will appear shortly</p>
@@ -685,19 +810,19 @@ function PresenceInterviewPageContent() {
       </div>
 
       <div
-        className={`shrink-0 border-t border-white/10 bg-[#111111]/95 px-4 py-2 text-center text-xs text-slate-400 ${
+        className={`presence-phase-bar shrink-0 border-t border-white/10 bg-[#111111]/95 px-4 py-2 text-center text-xs ${
           conversationStarted ? "" : "hidden sm:block"
         }`}
       >
-        <span className="inline-flex items-center gap-2">
+        <span className="presence-phase-bar-text inline-flex items-center gap-2">
           {phase === "listening" && <Mic size={12} className="animate-pulse text-emerald-400" />}
-          {phaseLabel(phase)}
+          {phaseLabel(phase, answerConfirmOpen)}
         </span>
       </div>
 
       <PresenceCallControls
         conversationStarted={conversationStarted}
-        avatarReady={avatarReady}
+        avatarReady={avatarReady && !hydrating}
         loading={loading}
         isSpeaking={isSpeaking}
         phase={phase}
@@ -706,6 +831,13 @@ function PresenceInterviewPageContent() {
         onReplayQuestion={() => void handleReplayQuestion()}
         onPassQuestion={() => void handlePassQuestion()}
         onToggleManualInput={() => setShowManualInput((value) => !value)}
+      />
+
+      <PresenceAnswerConfirm
+        open={answerConfirmOpen && phase === "listening" && conversationStarted}
+        transcript={pendingAnswerText || liveTranscript}
+        onSubmit={handleConfirmSubmit}
+        onContinue={handleConfirmContinue}
       />
 
       {showManualInput && conversationStarted && (

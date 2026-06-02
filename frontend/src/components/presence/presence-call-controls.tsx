@@ -53,7 +53,7 @@ export function PresenceCallControls({
             <ControlButton
               label={phase === "listening" ? "Mic live" : "Mic"}
               active={phase === "listening"}
-              disabled
+              statusOnly
               icon={<Mic size={18} />}
             />
             <ControlButton
@@ -93,29 +93,43 @@ function ControlButton({
   icon,
   active = false,
   disabled = false,
+  statusOnly = false,
   onClick,
 }: {
   label: string;
   icon: React.ReactNode;
   active?: boolean;
   disabled?: boolean;
+  /** Non-clickable status chip (e.g. mic indicator) — keeps label at full contrast */
+  statusOnly?: boolean;
   onClick?: () => void;
 }) {
+  const isDisabled = disabled && !statusOnly;
+
   return (
     <button
       type="button"
-      disabled={disabled}
+      disabled={isDisabled}
       onClick={onClick}
-      className={`inline-flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
-        active
-          ? "bg-emerald-500/20 text-emerald-100"
-          : "bg-white/8 text-slate-200 hover:bg-white/12"
-      }`}
+      aria-disabled={statusOnly ? true : undefined}
+      className={`presence-control-btn inline-flex flex-col items-center gap-1.5 rounded-xl px-3 py-2 transition ${
+        isDisabled ? "cursor-not-allowed" : statusOnly ? "cursor-default" : ""
+      } ${active ? "is-active" : ""}`}
     >
-      <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#2a2a2a]">
+      <span
+        className={`presence-control-icon flex h-10 w-10 items-center justify-center rounded-full ${
+          isDisabled ? "is-disabled" : ""
+        }`}
+      >
         {icon}
       </span>
-      {label}
+      <span
+        className={`presence-control-label text-xs font-semibold leading-tight ${
+          active ? "is-active" : ""
+        } ${isDisabled ? "is-disabled" : ""}`}
+      >
+        {label}
+      </span>
     </button>
   );
 }

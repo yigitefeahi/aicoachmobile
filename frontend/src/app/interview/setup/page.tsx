@@ -620,7 +620,7 @@ function InterviewSetupPageContent() {
                   value={targetCompany}
                   onChange={(e) => setTargetCompany(e.target.value)}
                   className="input"
-                    placeholder="e.g. Turkcell, Trendyol, Aselsan, Türk Telekom"
+                    placeholder="e.g. Nike, Disney, Spotify, Airbnb"
                 />
               </div>
 

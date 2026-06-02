@@ -12,6 +12,13 @@ export type MouthDriverHead = {
 
 const MOUTH_REALTIME_KEYS = ["mouthOpen", "jawOpen"] as const;
 
+/** Subtle jaw sync during TTS — visemes handle lip shape; keep this moderate. */
+const MOUTH_OPEN_MIN = 0.02;
+const MOUTH_OPEN_MAX = 0.22;
+const MOUTH_RMS_GAIN = 2.1;
+const MOUTH_PEAK_GAIN = 0.38;
+const MOUTH_SMOOTHING = 0.34;
+
 type MouthDriverState = {
   timeData: Uint8Array;
   smooth: number;
@@ -32,7 +39,7 @@ function getState(head: MouthDriverHead): MouthDriverState {
 }
 
 function setMouthRealtime(head: MouthDriverHead, amount: number) {
-  const clamped = Math.max(0, Math.min(1, amount));
+  const clamped = Math.max(MOUTH_OPEN_MIN, Math.min(MOUTH_OPEN_MAX, amount));
   for (const key of MOUTH_REALTIME_KEYS) {
     const mt = head.mtAvatar[key];
     if (!mt) continue;
@@ -66,8 +73,11 @@ export function tickAudioDrivenMouth(head: MouthDriverHead): void {
     peak = Math.max(peak, freq[i]);
   }
 
-  const target = Math.min(1, Math.max(rms * 5.2, Math.pow(peak / 100, 0.6) * 0.95));
-  state.smooth += (target - state.smooth) * 0.42;
+  const target = Math.min(
+    1,
+    Math.max(rms * MOUTH_RMS_GAIN, Math.pow(peak / 100, 0.62) * MOUTH_PEAK_GAIN),
+  );
+  state.smooth += (target - state.smooth) * MOUTH_SMOOTHING;
   setMouthRealtime(head, state.smooth);
 }
 

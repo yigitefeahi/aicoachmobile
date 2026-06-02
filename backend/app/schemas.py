@@ -160,6 +160,7 @@ class RoadmapResponse(BaseModel):
     profession: str
     target_company: str
     interview_date: str
+    focus_area: Optional[str] = None
     days_left: int
     schedule: List[Dict[str, Any]]
     retrieval_evidence: Optional[List[Dict[str, Any]]] = None
@@ -171,6 +172,7 @@ class WeeklyDrillsResponse(BaseModel):
     profession: str
     target_company: str
     interview_date: str
+    focus_area: Optional[str] = None
     weeks: int
     drills: List[Dict[str, Any]]
     retrieval_evidence: Optional[List[Dict[str, Any]]] = None

@@ -13,6 +13,7 @@ import {
   type MouthDriverHead,
 } from "@/lib/avatar-mouth-driver";
 import { buildLipsyncVisemePayload } from "@/lib/build-lipsync-payload";
+import { buildWordTiming } from "@/lib/word-timing";
 import { fetchOpenAiTtsArrayBuffer, speakWithBrowserTts } from "@/lib/openai-tts-audio";
 import { speakableText } from "@/lib/safe-text";
 import {
@@ -151,6 +152,7 @@ export const TalkingHeadAvatar = forwardRef<TalkingHeadAvatarHandle, TalkingHead
         const arrayBuffer = await fetchOpenAiTtsArrayBuffer(plain);
         const audioBuffer = await head.audioCtx.decodeAudioData(arrayBuffer.slice(0));
         const durationMs = Math.max(400, Math.round(audioBuffer.duration * 1000));
+        const wordTiming = buildWordTiming(plain, durationMs);
 
         const lipsync = head.lipsync?.en;
         const visemePayload =
@@ -164,6 +166,9 @@ export const TalkingHeadAvatar = forwardRef<TalkingHeadAvatarHandle, TalkingHead
           head.speakAudio(
             {
               audio: audioBuffer,
+              words: wordTiming.words,
+              wtimes: wordTiming.wtimes,
+              wdurations: wordTiming.wdurations,
               ...(visemePayload.visemes.length
                 ? {
                     visemes: visemePayload.visemes,
@@ -209,11 +214,20 @@ export const TalkingHeadAvatar = forwardRef<TalkingHeadAvatarHandle, TalkingHead
       : "h-[min(52vh,460px)] w-full overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-b from-slate-900/80 to-slate-950/90 shadow-[0_24px_80px_rgba(8,47,73,0.35)]";
 
     return (
-      <div className={shellClass}>
-        <div ref={containerRef} className={canvasClass} aria-label="3D AI interviewer avatar" />
+      <div className={`${shellClass}${isTile ? " overflow-hidden" : ""}`}>
+        {isTile && <div className="presence-avatar-office-bg" aria-hidden />}
+        <div
+          ref={containerRef}
+          className={
+            isTile
+              ? "relative z-0 h-full w-full overflow-hidden bg-transparent"
+              : canvasClass
+          }
+          aria-label="3D AI interviewer avatar"
+        />
         {loading && (
           <div
-            className={`absolute inset-0 flex items-center justify-center bg-slate-950/70 text-sm text-slate-300 ${
+            className={`absolute inset-0 z-10 flex items-center justify-center bg-slate-950/70 text-sm text-slate-300 ${
               isTile ? "" : "rounded-3xl"
             }`}
           >
@@ -221,7 +235,7 @@ export const TalkingHeadAvatar = forwardRef<TalkingHeadAvatarHandle, TalkingHead
           </div>
         )}
         {loadError && (
-          <div className="absolute inset-x-4 bottom-4 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+          <div className="absolute inset-x-4 bottom-4 z-10 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
             {loadError}
           </div>
         )}

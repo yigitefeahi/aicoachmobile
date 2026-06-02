@@ -18,6 +18,7 @@ import { API_BASE, apiFetch, buildAuthHeaders } from "@/lib/api";
 import { speakableText } from "@/lib/safe-text";
 import { applyEnglishSpeechVoice } from "@/lib/browser-tts-en";
 import { buildSessionContextLine } from "@/lib/question-display";
+import { useInterviewSessionHydration } from "@/lib/interview-session-hydration";
 import { SessionControlBar } from "@/components/session-control-bar";
 import { InterviewQuestionHero } from "@/components/live/interview-question-hero";
 
@@ -71,21 +72,47 @@ function VideoInterviewPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  const sessionId = searchParams.get("session_id") || "";
+
+  const urlFallback = useMemo(
+    () => ({
+      profession: searchParams.get("profession") || undefined,
+      difficulty: searchParams.get("difficulty") || undefined,
+      mode: "video" as const,
+      length: searchParams.get("length") || undefined,
+      focusArea: searchParams.get("focusArea") || undefined,
+      sector: searchParams.get("sector") || undefined,
+      company: searchParams.get("company") || undefined,
+      companyPack: searchParams.get("companyPack") || undefined,
+      question: searchParams.get("question") || undefined,
+      questionRationale: searchParams.get("questionRationale") || undefined,
+      questionContext: searchParams.get("questionContext") || undefined,
+    }),
+    [searchParams]
+  );
+
+  const { session, hydrating, hydrationError } = useInterviewSessionHydration(
+    sessionId,
+    urlFallback
+  );
+
+  const profession = session.profession;
+  const difficulty = session.difficulty;
+  const length = session.length;
+  const sector = session.sector;
+  const targetCompany = session.targetCompany;
+  const focusArea = session.focusArea;
+
   const [sessionQuestionContext, setSessionQuestionContext] = useState(
     () => searchParams.get("questionContext") || ""
   );
 
-  const sessionId = searchParams.get("session_id") || "";
-  const profession = searchParams.get("profession") || "Frontend Developer";
-  const difficulty = searchParams.get("difficulty") || "Junior";
-  const length = searchParams.get("length") || "10 Questions";
-  const sector = searchParams.get("sector") || "";
-  const targetCompany = searchParams.get("company") || "";
-  const question =
-    searchParams.get("question") ||
-    "Tell me about yourself and why you're interested in this role.";
-  const questionRationale = searchParams.get("questionRationale") || "";
-  const focusArea = searchParams.get("focusArea") || "Mixed";
+  const [currentQuestion, setCurrentQuestion] = useState(
+    () => searchParams.get("question") || session.currentQuestion
+  );
+  const [questionRationale, setQuestionRationale] = useState(
+    () => searchParams.get("questionRationale") || ""
+  );
 
   const liveVideoRef = useRef<HTMLVideoElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -124,6 +151,18 @@ function VideoInterviewPageContent() {
       router.push("/interview/setup");
     }
   }, [sessionId, router]);
+
+  useEffect(() => {
+    if (hydrating) return;
+    setCurrentQuestion(session.currentQuestion);
+    setQuestionRationale(session.questionRationale);
+    if (session.questionContext) {
+      setSessionQuestionContext(session.questionContext);
+    }
+    setQuestionIndex(session.questionIndex);
+    setTotalQuestions(session.totalQuestions);
+    setPassesLeft(session.passesLeft);
+  }, [hydrating, session]);
 
   const sessionLineForHero = useMemo(
     () =>
@@ -359,18 +398,12 @@ function VideoInterviewPageContent() {
         return;
       }
       if (data.next_question) {
-        const query = new URLSearchParams(searchParams.toString());
-        query.set("question", data.next_question);
-        const ctxUrl = qc || sessionQuestionContext;
-        if (ctxUrl) {
-          query.set("questionContext", ctxUrl);
-        }
+        setCurrentQuestion(data.next_question);
         const qr =
           typeof data.question_rationale === "string" ? data.question_rationale.trim() : "";
         if (qr) {
-          query.set("questionRationale", qr);
+          setQuestionRationale(qr);
         }
-        router.push(`/interview/video?${query.toString()}`);
       }
       setAnalysisSuccess(false);
       setPassNotice(true);
@@ -419,10 +452,22 @@ function VideoInterviewPageContent() {
         </div>
 
         <InterviewQuestionHero
-          questionText={question}
+          questionText={currentQuestion}
           contextLabel={sessionLineForHero}
           questionRationale={questionRationale || pendingQuestionRationale}
         />
+
+        {(hydrating || hydrationError) && (
+          <div
+            className={`mb-4 rounded-2xl border px-4 py-3 text-sm ${
+              hydrationError
+                ? "border-amber-400/30 bg-amber-500/10 text-amber-100"
+                : "border-white/10 bg-white/5 text-slate-300"
+            }`}
+          >
+            {hydrating ? "Loading saved session progress…" : hydrationError}
+          </div>
+        )}
 
         {passNotice && (
           <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-400/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-50">
@@ -695,12 +740,15 @@ function VideoInterviewPageContent() {
                         type="button"
                         className="btn-primary"
                         onClick={() => {
-                          const query = new URLSearchParams(searchParams.toString());
-                          query.set("question", pendingNextQuestion);
+                          setCurrentQuestion(pendingNextQuestion);
                           if (pendingQuestionRationale) {
-                            query.set("questionRationale", pendingQuestionRationale);
+                            setQuestionRationale(pendingQuestionRationale);
                           }
-                          router.push(`/interview/video?${query.toString()}`);
+                          setPendingNextQuestion(null);
+                          setPendingQuestionRationale("");
+                          setCanRetry(false);
+                          setAttemptsLeft(0);
+                          resetAll();
                         }}
                       >
                         Continue to Next Question

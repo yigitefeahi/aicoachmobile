@@ -18,10 +18,16 @@ type SpeechRecognitionCtorLike = new () => SpeechRecognitionLike;
 export type SpeechEndDetectorOptions = {
   onTranscript?: (text: string) => void;
   onSpeechEnd: (text: string) => void;
+  /** Fired after silenceMs of quiet speech — use with requireConfirmation instead of auto-submit */
+  onSilenceDetected?: (text: string) => void;
+  /** User resumed speaking after a silence prompt */
+  onSpeechResumed?: () => void;
   onError?: (message: string) => void;
   silenceMs?: number;
   minChars?: number;
   lang?: string;
+  /** When true, silence triggers onSilenceDetected; call submitNow() to finish */
+  requireConfirmation?: boolean;
 };
 
 export type SpeechEndDetector = {
@@ -29,6 +35,10 @@ export type SpeechEndDetector = {
   stop: () => void;
   isActive: () => boolean;
   getTranscript: () => string;
+  /** Reset silence timer after user dismisses the confirmation prompt */
+  resumeListening: () => void;
+  /** Submit the current transcript (after user confirms) */
+  submitNow: () => void;
 };
 
 export function createSpeechEndDetector(options: SpeechEndDetectorOptions): SpeechEndDetector {
@@ -42,6 +52,7 @@ export function createSpeechEndDetector(options: SpeechEndDetectorOptions): Spee
   let transcript = "";
   let lastHeardAt = 0;
   let ended = false;
+  let silencePromptShown = false;
 
   const getCtor = (): SpeechRecognitionCtorLike | null => {
     if (typeof window === "undefined") return null;
@@ -80,6 +91,7 @@ export function createSpeechEndDetector(options: SpeechEndDetectorOptions): Spee
     ended = false;
     transcript = "";
     lastHeardAt = Date.now();
+    silencePromptShown = false;
     active = true;
 
     recognition = new Ctor();
@@ -95,6 +107,10 @@ export function createSpeechEndDetector(options: SpeechEndDetectorOptions): Spee
       }
       transcript = text.trim();
       lastHeardAt = Date.now();
+      if (silencePromptShown) {
+        silencePromptShown = false;
+        options.onSpeechResumed?.();
+      }
       options.onTranscript?.(transcript);
     };
 
@@ -125,10 +141,29 @@ export function createSpeechEndDetector(options: SpeechEndDetectorOptions): Spee
     clearPoll();
     pollId = window.setInterval(() => {
       if (!active || ended) return;
-      if (transcript.length >= minChars && Date.now() - lastHeardAt >= silenceMs) {
-        finish();
+      if (transcript.length < minChars) return;
+      if (Date.now() - lastHeardAt < silenceMs) return;
+
+      if (options.requireConfirmation) {
+        if (silencePromptShown) return;
+        silencePromptShown = true;
+        options.onSilenceDetected?.(transcript.trim());
+        return;
       }
+
+      finish();
     }, 200);
+  };
+
+  const resumeListening = () => {
+    if (!active || ended) return;
+    silencePromptShown = false;
+    lastHeardAt = Date.now();
+  };
+
+  const submitNow = () => {
+    if (!active || ended) return;
+    finish();
   };
 
   const stop = () => {
@@ -147,5 +182,7 @@ export function createSpeechEndDetector(options: SpeechEndDetectorOptions): Spee
     stop,
     isActive: () => active,
     getTranscript: () => transcript,
+    resumeListening,
+    submitNow,
   };
 }

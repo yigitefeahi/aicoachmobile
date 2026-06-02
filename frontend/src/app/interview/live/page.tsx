@@ -13,6 +13,7 @@ import { apiFetch, API_BASE, buildAuthHeaders } from "@/lib/api";
 import { safeText, speakableText } from "@/lib/safe-text";
 import { applyEnglishSpeechVoice } from "@/lib/browser-tts-en";
 import { buildSessionContextLine } from "@/lib/question-display";
+import { useInterviewSessionHydration } from "@/lib/interview-session-hydration";
 import { SessionControlBar } from "@/components/session-control-bar";
 import { SessionStatsCards } from "@/components/live/session-stats-cards";
 import { InterviewQuestionHero } from "@/components/live/interview-question-hero";
@@ -65,26 +66,52 @@ function LiveInterviewPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  const sessionId = searchParams.get("session_id") || "";
+
+  const urlFallback = useMemo(
+    () => ({
+      profession: searchParams.get("profession") || undefined,
+      difficulty: searchParams.get("difficulty") || undefined,
+      mode: searchParams.get("mode") || undefined,
+      length: searchParams.get("length") || undefined,
+      focusArea: searchParams.get("focusArea") || undefined,
+      sector: searchParams.get("sector") || undefined,
+      company: searchParams.get("company") || undefined,
+      companyPack: searchParams.get("companyPack") || undefined,
+      instantMode: searchParams.get("instantMode") === "true",
+      interviewDate: searchParams.get("interviewDate") || undefined,
+      caseType: searchParams.get("caseType") || undefined,
+      question: searchParams.get("question") || undefined,
+      questionRationale: searchParams.get("questionRationale") || undefined,
+      questionContext: searchParams.get("questionContext") || undefined,
+    }),
+    [searchParams]
+  );
+
+  const { session, hydrating, hydrationError } = useInterviewSessionHydration(
+    sessionId,
+    urlFallback
+  );
+
+  const profession = session.profession;
+  const difficulty = session.difficulty;
+  const mode = session.mode;
+  const length = session.length;
+  const focusArea = session.focusArea;
+  const sector = session.sector;
+  const targetCompany = session.targetCompany;
+  const instantMode = session.instantMode;
+
   const [sessionQuestionContext, setSessionQuestionContext] = useState(
     () => searchParams.get("questionContext") || ""
   );
 
-  const sessionId = searchParams.get("session_id") || "";
-  const profession = searchParams.get("profession") || "Frontend Developer";
-  const difficulty = searchParams.get("difficulty") || "Junior";
-  const mode = searchParams.get("mode") || "text";
-  const length = searchParams.get("length") || "10 Questions";
-  const focusArea = searchParams.get("focusArea") || "Mixed";
-  const sector = searchParams.get("sector") || "";
-  const targetCompany = searchParams.get("company") || "";
-  const instantMode = searchParams.get("instantMode") === "true";
-  const initialQuestion =
-    searchParams.get("question") ||
-    "Tell me about yourself and why you're interested in this role.";
-  const initialQuestionRationale = searchParams.get("questionRationale") || "";
-
-  const [currentQuestion, setCurrentQuestion] = useState(initialQuestion);
-  const [questionRationale, setQuestionRationale] = useState(initialQuestionRationale);
+  const [currentQuestion, setCurrentQuestion] = useState(
+    () => searchParams.get("question") || session.currentQuestion
+  );
+  const [questionRationale, setQuestionRationale] = useState(
+    () => searchParams.get("questionRationale") || ""
+  );
   const [answer, setAnswer] = useState("");
   const [feedback, setFeedback] = useState(
     "Your answer will be evaluated here with strengths, weaknesses and suggestions."
@@ -134,6 +161,18 @@ function LiveInterviewPageContent() {
       router.push("/interview/setup");
     }
   }, [sessionId, router]);
+
+  useEffect(() => {
+    if (hydrating) return;
+    setCurrentQuestion(session.currentQuestion);
+    setQuestionRationale(session.questionRationale);
+    if (session.questionContext) {
+      setSessionQuestionContext(session.questionContext);
+    }
+    setQuestionIndex(session.questionIndex);
+    setTotalQuestions(session.totalQuestions);
+    setPassesLeft(session.passesLeft);
+  }, [hydrating, session]);
 
   const icon = useMemo(() => {
     if (mode === "audio") return <Mic size={20} />;
@@ -533,6 +572,18 @@ function LiveInterviewPageContent() {
         </div>
         <SessionStatsCards attemptsLeft={attemptsLeft} passesLeft={passesLeft} />
 
+        {(hydrating || hydrationError) && (
+          <div
+            className={`mb-4 rounded-2xl border px-4 py-3 text-sm ${
+              hydrationError
+                ? "border-amber-400/30 bg-amber-500/10 text-amber-100"
+                : "border-white/10 bg-white/5 text-slate-300"
+            }`}
+          >
+            {hydrating ? "Loading saved session progress…" : hydrationError}
+          </div>
+        )}
+
         <InterviewQuestionHero
           questionText={safeText(currentQuestion)}
           contextLabel={sessionLineForHero}
@@ -545,7 +596,7 @@ function LiveInterviewPageContent() {
             currentQuestion={currentQuestion}
             mode={mode}
             answer={answer}
-            loading={loading}
+            loading={loading || hydrating}
             recording={recording}
             audioReady={audioReady}
             speechTranscript={speechTranscript}

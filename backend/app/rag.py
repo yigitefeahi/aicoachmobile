@@ -916,7 +916,9 @@ def retrieve_for_roadmap(
             profession=profession,
             query=(
                 "Build a preparation roadmap with drills, weak-skill practice, frameworks, and success criteria. "
-                f"Interview date: {interview_date}"
+                f"Interview date: {interview_date}. "
+                f"Focus area: {focus_area}. "
+                f"Target company: {target_company}."
             ),
             company=target_company,
             focus_area=focus_area,
